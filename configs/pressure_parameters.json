@@ -1,0 +1,10 @@
+{
+  "profile": "day_lab_v1",
+  "scenario": "rush",
+  "initial_sun": 200,
+  "wave_start_ms": 18000,
+  "wave_interval_ms": 22000,
+  "wave_counts": [2, 3, 4, 5, 6, 7],
+  "plant_overrides": {"Peashooter": {"shot_interval_ms": 1200, "first_shot_delay_ms": 600}},
+  "zombie_overrides": {"Zombie": {"health": 300}, "FootballZombie": {"helmet_health": 1700}}
+}

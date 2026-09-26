@@ -1,0 +1,16 @@
+{
+  "profile": "day_lab_v1",
+  "scenario": "armor",
+  "enabled_plants": ["SunFlower", "Peashooter", "WallNut", "SnowPea", "RepeaterPea", "CherryBomb", "TallNut"],
+  "enabled_zombies": ["Zombie", "ConeheadZombie", "BucketheadZombie", "FootballZombie", "FlagZombie"],
+  "initial_sun": 150,
+  "wave_counts": [1, 2, 3, 4, 5, 6],
+  "wave_types": [
+    ["Zombie"],
+    ["Zombie", "Zombie"],
+    ["Zombie", "Zombie", "Zombie"],
+    ["FlagZombie", "ConeheadZombie", "Zombie", "ConeheadZombie"],
+    ["BucketheadZombie", "Zombie", "ConeheadZombie", "Zombie", "FlagZombie"],
+    ["BucketheadZombie", "ConeheadZombie", "Zombie", "FlagZombie", "ConeheadZombie", "FootballZombie"]
+  ]
+}

@@ -1,0 +1,182 @@
+from dataclasses import dataclass, fields, field
+import json
+from types import MappingProxyType
+from game.catalog import (
+    PLANTS as PLANT_CATALOG,
+    ZOMBIES as ZOMBIE_CATALOG,
+    DEFAULT_PLANTS,
+    DEFAULT_ZOMBIES,
+    validate_overrides,
+)
+
+PLANTS = DEFAULT_PLANTS
+ZOMBIES = DEFAULT_ZOMBIES
+SCENARIOS = ("economy", "armor", "rush")
+LABELS = {"economy": "经济建设", "armor": "装甲压力", "rush": "快速突袭"}
+NAMES = {name: spec.label for name, spec in PLANT_CATALOG.items()}
+RULES = (
+    "白天5行9列。阳光自动入账，每7秒自然产出25。向日葵种下6秒首次产25，"
+    "此后每24秒产25。每行一辆小推车。可以种植、铲除、等待；铲除不退款。"
+    "行列从0开始。每200毫秒最多提交一次决策。AI思考时游戏继续。"
+    "豌豆射手攻击本行；寒冰射手使目标减速；双发射手连发两颗；"
+    "坚果用于阻挡；樱桃炸弹短暂准备后造成周围三行范围伤害并消耗。"
+    "路障、铁桶和橄榄球有防具，橄榄球移动较快。"
+)
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    profile: str = "day_lab_v1"
+    scenario: str = "economy"
+    enabled_plants: tuple = PLANTS
+    enabled_zombies: tuple = ZOMBIES
+    initial_sun: int = 150
+    max_time_ms: int = 300000
+    tick_ms: int = 20
+    action_interval_ms: int = 200
+    max_observation_age_ms: int = 5000
+    actor: str = "human"
+    practice: bool = False
+    plant_overrides: dict = field(default_factory=dict)
+    zombie_overrides: dict = field(default_factory=dict)
+    wave_interval_ms: int = 25000
+    wave_start_ms: int = 18000
+    wave_counts: tuple = (1, 2, 3, 4, 5, 6)
+    wave_types: tuple = ()
+
+    def __post_init__(self):
+        for key in (
+            "initial_sun",
+            "max_time_ms",
+            "tick_ms",
+            "action_interval_ms",
+            "max_observation_age_ms",
+            "wave_interval_ms",
+            "wave_start_ms",
+        ):
+            if type(getattr(self, key)) is not int:
+                raise ValueError(f"{key} must be an integer")
+        object.__setattr__(self, "enabled_plants", tuple(self.enabled_plants))
+        object.__setattr__(self, "enabled_zombies", tuple(self.enabled_zombies))
+        if self.profile != "day_lab_v1" or self.scenario not in SCENARIOS:
+            raise ValueError("Unsupported experiment profile or scenario")
+        if self.tick_ms != 20 or self.action_interval_ms < 20:
+            raise ValueError("day_lab_v1 requires 20ms ticks and a positive action interval")
+        if not 0 <= self.initial_sun <= 9990 or self.max_time_ms <= 0 or self.max_time_ms % 20:
+            raise ValueError("Invalid resource or time limit")
+        if self.max_observation_age_ms < 0:
+            raise ValueError("Invalid observation age")
+        for selected, supported in (
+            (self.enabled_plants, PLANT_CATALOG),
+            (self.enabled_zombies, ZOMBIE_CATALOG),
+        ):
+            if (
+                not selected
+                or len(set(selected)) != len(selected)
+                or not set(selected) <= set(supported)
+            ):
+                raise ValueError("Only validated day_lab_v1 content can be enabled")
+        if self.actor not in ("human", "rule", "cloud", "test"):
+            raise ValueError("Unknown controller")
+        object.__setattr__(self, "wave_counts", tuple(self.wave_counts))
+        object.__setattr__(self, "wave_types", tuple(tuple(wave) for wave in self.wave_types))
+        if (
+            not self.wave_counts
+            or len(self.wave_counts) > 100
+            or any(type(n) is not int or not 1 <= n <= 100 for n in self.wave_counts)
+            or self.wave_start_ms < 0
+            or self.wave_interval_ms < 20
+            or self.wave_start_ms % 20
+            or self.wave_interval_ms % 20
+        ):
+            raise ValueError("Invalid wave timing/counts")
+        if self.wave_types and (
+            len(self.wave_types) != len(self.wave_counts)
+            or any(
+                len(wave) != count or any(name not in self.enabled_zombies for name in wave)
+                for wave, count in zip(self.wave_types, self.wave_counts)
+            )
+        ):
+            raise ValueError("wave_types must match wave_counts and enabled zombies")
+        for key, catalog, enabled in (
+            ("plant_overrides", PLANT_CATALOG, self.enabled_plants),
+            ("zombie_overrides", ZOMBIE_CATALOG, self.enabled_zombies),
+        ):
+            raw = getattr(self, key)
+            value = (
+                {name: dict(params) for name, params in raw.items()}
+                if isinstance(raw, MappingProxyType)
+                else raw
+            )
+            validate_overrides(value, catalog, enabled)
+            object.__setattr__(
+                self,
+                key,
+                MappingProxyType(
+                    {name: MappingProxyType(dict(params)) for name, params in value.items()}
+                ),
+            )
+
+    def to_dict(self):
+        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        for key in ("plant_overrides", "zombie_overrides"):
+            data[key] = {name: dict(params) for name, params in data[key].items()}
+        # Omit V2 defaults so unmodified day_lab_v1 conditions keep their identity.
+        defaults = {
+            "plant_overrides": {},
+            "zombie_overrides": {},
+            "wave_interval_ms": 25000,
+            "wave_start_ms": 18000,
+            "wave_counts": (1, 2, 3, 4, 5, 6),
+            "wave_types": (),
+        }
+        for key, value in defaults.items():
+            if data[key] == value:
+                data.pop(key)
+        return data
+
+    @classmethod
+    def from_dict(cls, value):
+        data = dict(value)
+        if set(data) - {f.name for f in fields(cls)}:
+            raise ValueError("Unknown configuration fields")
+        for key in ("enabled_plants", "enabled_zombies"):
+            if key in data:
+                data[key] = tuple(data[key])
+        return cls(**data)
+
+
+def rules_text(config):
+    """Public static rules only; never reveal the generated future schedule."""
+    value = RULES.replace("每200毫秒", f"每{config.action_interval_ms}毫秒")
+    if "TallNut" in config.enabled_plants:
+        value += "高坚果是更耐久的阻挡植物。"
+    if "FlagZombie" in config.enabled_zombies:
+        value += "旗帜僵尸比普通僵尸移动稍快。"
+    parameters = {
+        key: config.to_dict().get(key)
+        for key in ("plant_overrides", "zombie_overrides")
+        if config.to_dict().get(key)
+    }
+    if parameters:
+        value += "本实验的静态参数覆盖：" + json.dumps(parameters, ensure_ascii=False, sort_keys=True)
+    return value
+
+
+# Compatibility exports for existing local scripts. New code imports their owning modules.
+from .scenarios import make_schedule
+from .contracts import validate_action, ACTION_SCHEMA
+
+__all__ = [
+    "ExperimentConfig",
+    "PLANTS",
+    "ZOMBIES",
+    "SCENARIOS",
+    "LABELS",
+    "NAMES",
+    "RULES",
+    "rules_text",
+    "make_schedule",
+    "validate_action",
+    "ACTION_SCHEMA",
+]

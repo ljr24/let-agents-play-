@@ -1,0 +1,12 @@
+[project]
+name = "pypvz"
+version = "2.0.0"
+description = "Daytime PvZ research environment with shared human/AI actions and verified records"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "blue>=0.9.1",
+    "pygame>=2.6.1",
+    "setuptools>=80.9.0",
+    "wheel>=0.45.1",
+]

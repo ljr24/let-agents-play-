@@ -1,0 +1,13 @@
+{
+  "base_url": "https://YOUR-PROVIDER.example/v1",
+  "model": "YOUR-MODEL",
+  "api_key_env": "PVZ_API_KEY",
+  "structured_output": true,
+  "timeout_s": 10,
+  "min_interval_s": 1,
+  "max_observation_age_ms": 5000,
+  "max_requests": 300,
+  "max_total_tokens": 1000000,
+  "max_output_tokens": 256,
+  "token_limit_field": "max_completion_tokens"
+}
