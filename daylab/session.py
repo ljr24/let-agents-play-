@@ -17,9 +17,13 @@ from .recording import Recorder, ROOT, clean, digest, fingerprint
 
 class GameSession:
     def __init__(
-        self, *, headless=True, realtime=False, output_root=ROOT / "experiments", record=True
+        self, *, headless=True, realtime=False, output_root=ROOT / "experiments", record=True,
+        execution_mode=None
     ):
         self.headless, self.realtime = headless, realtime
+        self.execution_mode = execution_mode or ('realtime' if realtime else 'offline')
+        if self.execution_mode not in ('realtime', 'offline', 'pause_think') or (self.execution_mode == 'pause_think' and realtime):
+            raise ValueError('Invalid execution mode')
         self.output_root, self.record = Path(output_root), record
         self.owner_thread = threading.get_ident()
         self.recorder = None
@@ -94,6 +98,7 @@ class GameSession:
                     ),
                     "versions": fingerprint(),
                     "realtime": self.realtime,
+                    "execution_mode": self.execution_mode,
                     "rules": rules_text(self.config),
                     "public_history_sample_ms": 1000,
                     "timing_policy": {"lag_threshold_ms": 500, "sustained_lag_ms": 2000},
@@ -386,6 +391,7 @@ class GameSession:
                     and not self.flags
                     and not self.config.practice,
                     wall_elapsed_ms=round((time.monotonic() - self.started_wall) * 1000),
+                    execution_mode=self.execution_mode,
                 ),
             )
 

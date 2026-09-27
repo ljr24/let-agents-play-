@@ -12,6 +12,59 @@ def make_controller(actor, cloud_config=None):
     raise ValueError("Cloud play requires provider configuration")
 
 
+def paused_cloud(actor, config):
+    return actor == 'cloud' and config is not None and config.decision_mode == 'pause_think'
+
+
+def make_runner(session, controller):
+    if session.execution_mode == 'pause_think':
+        return PauseThinkRunner(session, controller)
+    return RealtimeRunner(session, controller)
+
+
+class PauseThinkRunner:
+    """Freeze while deciding, then run a bounded simulation interval at display pace."""
+    def __init__(self, session, controller):
+        if session.realtime or not isinstance(controller, CloudController):
+            raise ValueError('PauseThinkRunner requires an offline cloud session')
+        self.session, self.controller = session, controller
+        if controller.config.advance_after_decision_ms < session.config.action_interval_ms:
+            raise ValueError('Decision advance must meet action_interval_ms')
+        self.remaining = 0
+        self.accumulated = 0.0
+
+    def pulse(self, dt, now):
+        s, c = self.session, self.controller
+        if s.closed or s.status != 'running':
+            return
+        if self.remaining:
+            self.accumulated += max(0, dt)
+            steps = min(10, self.remaining, int((self.accumulated + 1e-9) / .020))
+            for _ in range(steps):
+                s.advance()
+                self.remaining -= 1
+                self.accumulated -= .020
+                # Update public memory without launching new requests during progression.
+                c.poll(s, now, allow_request=False)
+                if s.status != 'running':
+                    break
+            if not self.remaining:
+                self.accumulated = 0.0
+            return
+        # No dt is accumulated during thinking, including the response-arrival pulse.
+        had_request = c.inflight is not None
+        c.poll(s, now, allow_request=not had_request)
+        if s.closed or s.status != 'running':
+            return
+        if c.budget_reported and c.inflight is None:
+            s.finish('budget_exhausted')
+            return
+        if had_request and c.inflight is None and not getattr(c, 'pending_repair', None):
+            self.remaining = c.config.advance_after_decision_ms // 20
+            s.log('decision_timing', {'mode': 'pause_think', 'advance_ms': c.config.advance_after_decision_ms,
+                                     'last_error': c.last_error})
+
+
 class RealtimeRunner:
     def __init__(self, session, controller=None):
         if not session.realtime:

@@ -5,19 +5,21 @@ from ..controllers import CloudController
 from ..recording import ROOT
 from .input import InputRouter
 from .view import GameView
-from ..runner import RealtimeRunner, make_controller
+from ..runner import make_runner, make_controller, paused_cloud
 
 
 def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "experiments"):
     import pygame as pg
     from game import assets as tool
 
-    session = GameSession(headless=False, realtime=True, output_root=output_root)
+    pausing = paused_cloud(config.actor, cloud_config)
+    session = GameSession(headless=False, realtime=not pausing, output_root=output_root,
+                          execution_mode='pause_think' if pausing else 'realtime')
     controller = None
     try:
         session.reset(config, seed)
         controller = make_controller(config.actor, cloud_config)
-        runner = RealtimeRunner(session, controller)
+        runner = make_runner(session, controller)
         router = InputRouter(session) if config.actor == "human" else None
         view = GameView(session)
         clock = pg.time.Clock()
@@ -49,7 +51,7 @@ def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "
                     session.flag("practice_restart")
                     session.reset(config, seed)
                     controller = make_controller(config.actor, cloud_config)
-                    runner = RealtimeRunner(session, controller)
+                    runner = make_runner(session, controller)
                     router = InputRouter(session) if config.actor == "human" else None
                     view = GameView(session)
                     dt = 0
@@ -73,6 +75,8 @@ def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "
             if isinstance(controller, CloudController):
                 state = controller.last_error or ("等待回复" if controller.inflight else "等待下一次请求")
                 extra = f"云端 | 请求 {controller.requests}/{controller.config.max_requests} | Token记账 {controller.used_tokens} | {state}"
+                if pausing:
+                    extra = '思考暂停模式 | ' + ('推进中 | ' if runner.remaining else '游戏已冻结 | ') + extra
             view.draw(tool.SCREEN, router, paused, extra)
             pg.display.flip()
             if session.status != "running" and not session.closed:

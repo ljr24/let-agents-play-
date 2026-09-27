@@ -17,6 +17,30 @@
 
 ## 2. 架构与依赖
 
+### 云端提示词与暂停思考接口
+
+提示词文件与风格文件路径由 CloudConfig.prompt_file / style_file 指定，相对路径基于项目根目录；load_bundle() 校验并保存原文与哈希，render_prompt() 渲染静态规则与输出协议。不要再在控制器里拼接新的风格提示。编辑文件后重新 CloudConfig.load()，运行中的配置快照不变。
+
+本地程序接入示例（API 密钥照常从环境读取）：
+
+```python
+from daylab.controllers import CloudConfig
+from daylab.config import ExperimentConfig
+from daylab.session import GameSession
+from daylab.runner import make_controller, make_runner
+
+cloud = CloudConfig.load("cloud.deepseek.example.json")
+session = GameSession(realtime=False, execution_mode="pause_think")
+session.reset(ExperimentConfig(actor="cloud"), seed=7)
+controller = make_controller("cloud", cloud)
+runner = make_runner(session, controller)
+# 在主线程的事件循环中调用 runner.pulse(dt_seconds, monotonic_now)。
+# 即使思考暂停，也持续处理窗口事件；不要同时自行调用 session.advance()。
+# finally: controller.close(session); session.close()
+```
+
+CloudController.poll(..., allow_request=False) 只接收在途结果和更新记忆，不发起新请求；由 PauseThinkRunner 用来隔离“推进”与“决策”等待阶段。暂停调度器用模拟步决定观察时效，用现实时间决定 HTTP 超时；错误最多纠错一次，之后无动作推进。预算耗尽以技术状态结束，避免永久冻结。realtime 模式仍使用 RealtimeRunner，不共享暂停模式成绩。
+
 ```mermaid
 flowchart TD
   H[真人输入 ui/input] --> A[统一动作 actions]
@@ -70,10 +94,17 @@ flowchart TD
 | `daylab/config.py` | 配置校验、不可变参数、共同规则说明 | 具体攻击实现 |
 | `daylab/scenarios.py` | 由种子生成完整环境事件安排 | 根据存活敌人数提前刷新 |
 | `daylab/contracts.py` | 三种动作的格式与模型 JSON Schema | 执行时资源和目标检查 |
+| `daylab/cloud_context.py` | 可逆的云端输入压缩、历史差异和参考解码 | 删除公开信息、读取隐藏状态、修改游戏记录协议 |
+| `daylab/board_context.py` | text_board_v1 文字棋盘、时间序列摘要、当前实体及卡片表 | 读取内部状态、改变动作规则、宣称历史无损 |
+| `daylab/cloud_memory.py` | 有界单局公开事实、计数、策略备忘与清空 | 把计划当成执行事实、读取隐藏血量/未来出怪 |
+| `daylab/prompting.py`、`prompts/` | Markdown模板、风格JSON、校验、加载快照与内容校验值 | 在对局中热更新实验条件 |
+| `daylab/cloud_transport.py` | 严格 JSON、可终止 HTTP 子进程、总时限与凭据隔离 | 决策和游戏状态修改 |
+| `daylab/cloud_metrics.py` | 按请求 ID 分层统计、旧记录兼容、未知用量 | 把未知用量当作零费用 |
 | `daylab/actions.py` | 提交、去重、限频、执行与失败原因 | 鼠标选卡、网络请求 |
 | `daylab/economy.py` | 阳光余额、价格、冷却结束时间 | 独立 UI 余额 |
 | `daylab/session.py` | 生命周期、时钟、事件协调、结果 | 具体植物技能 |
 | `daylab/runner.py` | 现实时间积累、固定步推进、时序异常 | 改变模拟规则 |
+| `PauseThinkRunner`（runner.py） | 请求期间冻结、决策后定量推进、错误与预算结束 | 把思考等待时间补成游戏步 |
 | `daylab/observation.py` | 公开观察的字段白名单 | 内部血量与未来安排 |
 | `daylab/state_codec.py` | 内部校验状态、对象引用转换 | 给模型输入 |
 | `daylab/schemas.py` | 程序、清单与各数据流版本边界 | 自动猜测未知版本 |
@@ -126,6 +157,8 @@ with GameSession(headless=True, record=False) as session:
 稳定入口：`reset`、`observe`、`public_context`、`submit`、`events`、`advance`、`close`。`step_realtime` 属于宿主 runner；`cell_at`、`render_scene` 属于界面宿主。`level` 和 `entities` 属于内部诊断入口，不承诺第三方直接修改它们的兼容性。
 
 `observation_id` 包含局 ID 和模拟步；旧局、过时观察被拒绝。同一命令 ID 重复提交不会再次执行；同 ID 换内容会冲突。主线程是唯一写入者，云端工作线程只处理复制后的公开输入。
+
+云端提交被接收后，控制器必须等至少下一个完成的模拟步再读取局面、发起新请求。`submit` 只是排队，立即再次 `observe` 仍可能读到扣费、占用和冷却更新前的局面；`CloudController.next_observation_tick` 用于阻止这种错误时序。它不会暂停游戏或延长观察有效期。
 
 ## 6. 修改实验条件：优先改配置
 

@@ -10,6 +10,7 @@ import time
 from .controllers import rule_action, make_payload, parse_reply, ChatCompletions
 from .recording import read_lines, encoded
 from .schemas import validate_manifest
+from .cloud_metrics import cloud_metrics
 
 
 def read_json(path):
@@ -72,7 +73,7 @@ def run_metrics(directory):
     latencies = [
         m["latency_ms"] for m in models if "latency_ms" in m and m.get("error") != "TIMEOUT"
     ]
-    return {
+    metrics = {
         "记录": directory.name,
         "控制者": manifest["config"]["actor"],
         "关卡": manifest["config"]["scenario"],
@@ -80,6 +81,7 @@ def run_metrics(directory):
         "结果": result["status"] if result.get("finalized") else "technical_interruption",
         "模拟秒": result["sim_ms"] / 1000,
         "实时": manifest["realtime"],
+        "执行模式": manifest.get('execution_mode', 'realtime' if manifest['realtime'] else 'offline'),
         "可纳入正式比较": bool(result.get("comparison_eligible") and result.get("finalized")),
         "标记": result.get("flags", []),
         "阳光收入": sum(e["amount"] for e in events if e["type"] == "sun_income"),
@@ -102,6 +104,10 @@ def run_metrics(directory):
             if e["kind"] == "plant"
         ],
     }
+    # Stable columns for mixed human/cloud CSV reports.
+    metrics.update(cloud_metrics(directory))
+    metrics.pop("实际Token", None)
+    return metrics
 
 
 def compare_runs(directories, output):
@@ -111,12 +117,16 @@ def compare_runs(directories, output):
     manifests = [read_json(Path(p) / "manifest.json") for p in directories]
     matched = bool(rows) and len({m["environment_id"] for m in manifests}) == 1
     versions_match = len({encoded(m["versions"]) for m in manifests}) <= 1
-    mode_match = len({m["realtime"] for m in manifests}) <= 1
+    mode_match = len({m.get('execution_mode', 'realtime' if m['realtime'] else 'offline') for m in manifests}) <= 1
+    cloud_rows = [r for r in rows if r["控制者"] == "cloud"]
+    controller_known = all(r["云端配置"] is not None for r in cloud_rows)
+    controller_match = controller_known and len({encoded(r["云端配置"]) for r in cloud_rows}) <= 1
     eligible = (
         len(rows) >= 2
         and matched
         and versions_match
         and mode_match
+        and controller_match
         and all(r["可纳入正式比较"] for r in rows)
     )
     summary = {
@@ -124,6 +134,9 @@ def compare_runs(directories, output):
         "same_environment": matched,
         "same_versions": versions_match,
         "same_execution_mode": mode_match,
+        "same_cloud_controller_configuration": controller_match,
+        "controller_configuration_known": controller_known,
+        "comparison_note": "Strict pairing requires identical cloud settings; differing models/policies remain descriptive comparisons, not controlled pairs.",
         "runs": rows,
     }
     (output / "comparison.json").write_text(encoded(summary), encoding="utf-8")
@@ -143,7 +156,7 @@ def compare_runs(directories, output):
             )
     write_csv(output / "action_timeline.csv", timeline)
     body = "<p>研究范围：共同可见状态下的策略与决策比较，不代表视觉感知能力完全相同。</p>"
-    body += "<p>配对有效：<b>" + ("是" if eligible else "否（单局、版本/条件不同、未完成或受到干预）") + "</b>。</p>"
+    body += "<p>严格配对有效：<b>" + ("是" if eligible else "否（单局、版本/条件/云端配置不同或未知、未完成或受到干预）") + "</b>。不同模型仍可描述性比较，但需明确研究变量；用量未知请求不计入已确认Token，不代表免费。</p>"
     body += table(rows) + "<h2>动作时间线 / 回放定位</h2><p>复制回放命令，或在实验入口中选择记录并输入对应秒数。</p>" + table(timeline)
     body += (
         '<p><a href="comparison.csv">比较 CSV</a> · <a href="action_timeline.csv">动作时间线 CSV</a></p>'
@@ -180,6 +193,10 @@ def same_state_compare(
         "source_manifest": manifest,
         "source_result": source_result,
         "cloud_config": asdict(cloud_config) if cloud_config else None,
+        "decision_policy": "single_attempt_fixed_observation",
+        "repair_enabled_effective": False,
+        "memory_policy": "Independent fixed-observation samples; no persistent AI strategy or reconstructed episode facts. Empty memory unless explicitly present in recorded public input.",
+        "repair_policy_note": "Offline same-state comparison measures first replies only; no repair or future observations are used, regardless of realtime repair_invalid_reply.",
         "sample_limit": limit,
     }
     (output / "metadata.json").write_text(encoded(metadata), encoding="utf-8")
@@ -215,7 +232,7 @@ def same_state_compare(
                     last_request = start = time.monotonic()
                     try:
                         response = transport(payload)
-                        action, error = parse_reply(response, context)
+                        action, error = parse_reply(response, context, cloud_config)
                     except Exception as exc:
                         action, error = None, "SERVICE_ERROR:" + type(exc).__name__
                     usage = response.get("usage") if isinstance(response, dict) else None

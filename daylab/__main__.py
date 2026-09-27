@@ -78,13 +78,15 @@ def main():
                 )
             )
             return
-        from .runner import RealtimeRunner, make_controller
+        from .runner import make_runner, make_controller, paused_cloud
 
         controller = make_controller(config.actor, cloud)
-        with GameSession(realtime=not args.fast, output_root=args.output) as session:
+        pausing = paused_cloud(config.actor, cloud)
+        with GameSession(realtime=not args.fast and not pausing, output_root=args.output,
+                         execution_mode='pause_think' if pausing else None) as session:
             session.reset(config, args.seed)
             last = time.monotonic()
-            runner = RealtimeRunner(session, controller) if not args.fast else None
+            runner = make_runner(session, controller) if not args.fast else None
             try:
                 while session.status == "running":
                     now = time.monotonic()
