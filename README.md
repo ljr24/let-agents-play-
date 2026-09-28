@@ -1,53 +1,27 @@
-# pypvz 白天实验室 V2
+# pypvz 白天实验室 V3
 
-用于个人研究的人机共用测试环境。保留原游戏设计和全部素材，按战斗、实验控制、数据、界面划分代码。不是魔改版发布项目，也不是通用游戏引擎。
+《植物大战僵尸》人机策略实验环境：十档僵尸难度 × 三套8卡方案，共30种关卡条件，提供统一操作、云端决策、完整记录与回放。
 
-## 开始使用
+## 启动
 
-首次下载（Windows）：安装 Python 3.12（包含 Python Launcher），下载并解压整个仓库，双击 **setup_day_lab.cmd** 联网创建独立环境并安装运行依赖，再双击 **start_day_lab.cmd**。代码和所需素材都在仓库中，不需要另外寻找素材。这是源码版，不是免安装的 exe；云端 AI 需要自行配置服务和密钥，真人及规则 AI 不需要。
+Windows首次下载：安装Python 3.12（包含Python Launcher），解压整个仓库，双击 setup_day_lab.cmd 创建独立环境，再双击 start_day_lab.cmd。
+本机已有安装目录为 E:\AI_game_test，继续使用其中的 .venv。
 
-在本目录双击 **start_day_lab.cmd**。选择真人游玩、规则 AI 或云端 AI，设置关卡和种子后开始。
+入口选择关卡01—10、方案A/B/C、真人／规则AI／云端AI和种子。全部直接开放，八张卡同时显示，数字键1—8选卡。
 
-默认仍为六种植物、四种僵尸和原来的三个实验预设。选择 configs 中的实验配置可以使用已接入的更多原有内容、调整出怪与数值。原版 pypvz.py / start_pypvz.cmd 已退役，只有实验入口继续使用。
+## 文档
 
-## 云端 AI 与提示词
+- [使用、关卡与云端设置](README_DAY_LAB.md)
+- [架构和开发接口](docs/DEVELOPMENT.md)
+- [记录结构和比较口径](docs/DATA_FORMAT.md)
+- [上游来源与作者声明](docs/UPSTREAM.md)
 
-当前包含文字棋盘、单局事实与策略记忆，以及独立的“思考时暂停、回复后推进”模式。DeepSeek 示例为 `cloud.deepseek.example.json`；密钥由本机 `PVZ_API_KEY` 环境变量读取，不随仓库提供。API 使用可能产生费用。
+## 云端与数据
 
-- [完整提示词框架](prompts/cloud_framework.md)：游戏目标、规则、决策流程和输入输出协议。
-- [可编辑游戏风格](prompts/play_style.json)：修改 name / instructions，即可调整激进、保守或自定义偏好。
-- 示例默认开启思考，每次决策后推进1秒。原实时模式保留；两种模式的成绩不会混为同条件比较。
-- 新建配置或重新加载配置时读取提示词快照，编辑后请开始新局。具体配置与接口见使用说明和开发文档。
+DeepSeek示例是 cloud.deepseek.example.json，使用思考暂停、回复后推进1秒。密钥从本机 PVZ_API_KEY 环境变量读取。
+prompts/cloud_framework.md 是提示词框架，prompts/play_style.json 是可编辑风格；新局加载快照。
+每次决策最多两次请求，连续三次失败后暂停，可重试或结束保存。输入、实际Token、回复错误和动作执行分别记录。
 
-## 文档与交接
+正常记录保存为 experiments/关卡xx/方案xx/时间_控制者_seed种子_短编号。入口支持筛选、比较和回放。
 
-- [使用说明](README_DAY_LAB.md)：操作、配置、记录、回放与云端设置。
-- [开发交接与架构](docs/DEVELOPMENT.md)：模块职责、调用关系、修改入口和测试方法。
-- [数据格式](docs/DATA_FORMAT.md)：公开观察、事件、检查点与版本边界。
-- [来源与使用限制](docs/UPSTREAM.md)：原作者声明、上游来源与保留内容。
-
-docs 只保留上述三份技术与来源文档；原 V2 变更中的有效迁移说明已并入开发文档，原版 README 的来源与使用声明已并入来源文档。
-
-## 目录
-
-- game/：战斗对象、碰撞、地图、素材加载、内容注册。
-- daylab/：统一人机动作、时钟、实验配置、记录、回放、分析和界面。
-- configs/：实验配置示例。
-- prompts/：可编辑提示词框架和游戏风格。
-- resources/：完整保留的原素材。
-- experiments/、reports/：本地生成的原始记录与分析结果。
-
-## 基本命令
-
-在项目目录运行：
-
-```powershell
-.\.venv\Scripts\python.exe -B -m daylab
-.\.venv\Scripts\python.exe -B -m daylab run --actor rule --headless --fast --seed 42
-```
-
-保留的 V1 真人记录未改写。代码指纹已经变化，旧记录使用显式的跨版本检查；新记录可进行正常同版本验证。详见数据格式说明。
-
-开发期间的测试脚本、自动测试记录、验证报告和测试截图已按要求清理；真人记录与游戏的记录、回放、比较功能保留。
-
-沿用本地 .venv，没有新建或更换环境。上游来源和原作者使用声明保留在来源文档，本次整理未重新授权代码或素材。
+game/ 负责战斗，daylab/ 负责实验和控制，configs/ 负责条件，prompts/ 负责提示词，resources/ 保留完整原素材。原版主游戏入口已经退役。

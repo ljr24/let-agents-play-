@@ -2,6 +2,8 @@ import argparse
 from dataclasses import replace
 import json
 import time
+import sys
+from .benchmark import load_benchmark
 
 from .config import ExperimentConfig, SCENARIOS
 from .recording import ROOT, encoded
@@ -13,7 +15,9 @@ def main():
     sub.add_parser("gui", help="Open the desktop experiment launcher")
     run = sub.add_parser("run", help="Run an independent experiment")
     run.add_argument("--actor", choices=("human", "rule", "cloud"), default="human")
-    run.add_argument("--scenario", choices=SCENARIOS, default="economy")
+    run.add_argument("--scenario", choices=SCENARIOS, default=None)
+    run.add_argument("--level", choices=[f"{i:02d}" for i in range(1,11)], default="01")
+    run.add_argument("--scheme", choices=("A", "B", "C"), default="A")
     run.add_argument("--seed", type=int, default=42)
     run.add_argument("--headless", action="store_true")
     run.add_argument(
@@ -56,7 +60,9 @@ def main():
             parser.error("Human play requires a window")
         if args.fast and (args.actor != "rule" or not args.headless):
             parser.error("--fast is only for --headless --actor rule offline tests")
-        config = ExperimentConfig(scenario=args.scenario, actor=args.actor, practice=args.practice)
+        config = (ExperimentConfig(scenario=args.scenario, actor=args.actor, practice=args.practice)
+                  if args.scenario and args.scenario != "benchmark" else
+                  load_benchmark(args.level, args.scheme, actor=args.actor, practice=args.practice))
         if args.config:
             with open(args.config, encoding="utf-8-sig") as stream:
                 config = replace(
@@ -96,6 +102,14 @@ def main():
                     else:
                         runner.pulse(now - last, now)
                         last = now
+                        if getattr(controller, "paused_reason", None):
+                            from .cloud_status import describe
+                            print("云端暂停: " + describe(controller.paused_reason), flush=True)
+                            if sys.stdin.isatty() and input("输入 r 重试，其余输入结束并保存: ").strip().lower() == "r":
+                                controller.resume(session)
+                                last = time.monotonic()
+                            else:
+                                session.finish("technical_error")
                         time.sleep(0.002)
             finally:
                 controller.close(session)

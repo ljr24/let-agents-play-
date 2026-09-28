@@ -36,6 +36,13 @@ def entity_state(entity):
         owner_id=getattr(entity, "lab_owner", None),
     )
     state["last_damage_source"] = getattr(entity, "lab_last_damage_source", None)
+    state["modifiers"] = getattr(entity, "lab_modifiers", [])
+    state["base_damage"] = getattr(entity, "lab_base_damage", None)
+    # Composite fields used by the enabled upstream attacks (not pygame groups/maps).
+    for key in ("orig_pos", "hit_zombies", "attack_zombies"):
+        value = getattr(entity, key, None)
+        if isinstance(value, (list, tuple, set)):
+            state[key] = [getattr(item, "lab_id", item) for item in value]
     state["invulnerable"] = math.isinf(getattr(entity, "health", 0))
     state["hp"] = state.pop("health", None)
     if getattr(entity, "lab_parameters", None):

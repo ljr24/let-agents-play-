@@ -24,9 +24,10 @@ def rule_action(observation):
     shooters = {"Peashooter", "SnowPea", "RepeaterPea"}
 
     def place(name, row, cols):
+        from .placement import placement_reason
         if cards.get(name, {}).get("ready"):
             for col in cols:
-                if grid[row][col] is None:
+                if placement_reason(observation, name, row, col) is None:
                     return dict(type="PLACE_PLANT", plant_type=name, row=row, col=col)
 
     for enemy in sorted(enemies, key=lambda z: z["x"]):
@@ -82,7 +83,7 @@ class CloudConfig:
     timeout_s: float = 10
     min_interval_s: float = 1
     max_observation_age_ms: int = 5000
-    max_requests: int = 300
+    max_requests: int = 600
     max_total_tokens: int = 1000000
     max_output_tokens: int = 256
     token_limit_field: str = "max_completion_tokens"
@@ -100,8 +101,20 @@ class CloudConfig:
     prompt_file: str = "prompts/cloud_framework.md"
     style_file: str = "prompts/play_style.json"
     prompt_bundle: dict = field(init=False, repr=False)
+    max_input_tokens: int = 32768
+    context_window_tokens: int | None = None
+    provider_max_output_tokens: int | None = None
+    retry_output_tokens: int = 16384
+    consecutive_failure_limit: int = 3
 
     def __post_init__(self):
+        for key in ("max_input_tokens", "retry_output_tokens", "consecutive_failure_limit"):
+            if type(getattr(self, key)) is not int or getattr(self, key) <= 0:
+                raise ValueError(key + " must be a positive integer")
+        if self.context_window_tokens is not None and (type(self.context_window_tokens) is not int or self.context_window_tokens <= self.max_output_tokens):
+            raise ValueError("context_window_tokens must leave room for input and output")
+        if self.provider_max_output_tokens is not None and (type(self.provider_max_output_tokens) is not int or self.provider_max_output_tokens < self.max_output_tokens):
+            raise ValueError("provider_max_output_tokens must cover max_output_tokens")
         if self.decision_mode not in ('realtime', 'pause_think'):
             raise ValueError('Unknown decision_mode')
         if type(self.advance_after_decision_ms) is not int or not 200 <= self.advance_after_decision_ms <= 10000 or self.advance_after_decision_ms % 20:
@@ -238,11 +251,11 @@ def make_payload(config, context):
 
 FORMAT_ERRORS = frozenset({
     "INVALID_JSON", "INVALID_SCHEMA", "INVALID_ACTION", "INVALID_COORDINATE",
-    "INVALID_TARGET", "INCOMPLETE_RESPONSE",
+    "INVALID_TARGET", "INCOMPLETE_RESPONSE", "RESPONSE_TRUNCATED",
 })
 OBSERVATION_ERRORS = frozenset({
     "DISABLED_PLANT", "OUT_OF_BOUNDS", "OCCUPIED", "INSUFFICIENT_SUN", "COOLDOWN",
-    "CARD_NOT_READY", "TARGET_MISSING",
+    "CARD_NOT_READY", "TARGET_MISSING", "NOT_SLEEPING", "ALREADY_WAKING", "TARGET_CHANGED", "BLOCKED_TERRAIN",
 })
 
 
@@ -251,6 +264,8 @@ def parse_reply(response, context, config=None):
         choice = response["choices"][0]
         if choice["message"].get("refusal"):
             return None, "MODEL_REFUSAL"
+        if choice.get("finish_reason") == "length":
+            return None, "RESPONSE_TRUNCATED"
         if choice.get("finish_reason") != "stop":
             return None, "INCOMPLETE_RESPONSE"
         value = strict_json(choice["message"]["content"])
@@ -267,25 +282,21 @@ def parse_reply(response, context, config=None):
     if reason:
         return None, reason
     if action["type"] == "PLACE_PLANT":
-        observation = context["observation"]
-        cards = {c["plant_type"]: c for c in observation["cards"]}
-        if action["plant_type"] not in cards:
-            return None, "DISABLED_PLANT"
-        if not (0 <= action["row"] < 5 and 0 <= action["col"] < 9):
-            return None, "OUT_OF_BOUNDS"
-        if observation["grid"][action["row"]][action["col"]] is not None:
-            return None, "OCCUPIED"
-        card = cards[action["plant_type"]]
-        if observation["sun"] < card["cost"]:
-            return None, "INSUFFICIENT_SUN"
-        if card["cooldown_ms"] > 0:
-            return None, "COOLDOWN"
-        if not card["ready"]:
-            return None, "CARD_NOT_READY"
+        from .placement import placement_reason
+        error = placement_reason(context["observation"], action["plant_type"], action["row"], action["col"])
+        if error:
+            return None, error
     elif action["type"] == "REMOVE_PLANT":
         if not any(p["id"] == action["plant_id"] for p in context["observation"]["plants"]):
             return None, "TARGET_MISSING"
     return action, None
+
+
+def finish_reason(response):
+    try:
+        return response["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
 
 
 class ChatCompletions(BoundedTransport):
@@ -308,18 +319,44 @@ class CloudController:
         self.episode_id = None
         self.last_error = None
         self.next_observation_tick = 0
+        self.pending_repair = None
+        self.paused_reason = None
+        self.consecutive_failures = 0
+        self.unknown_reserved_tokens = 0
         from .cloud_memory import EpisodeMemory
         self.memory = EpisodeMemory(config.memory_max_events)
 
+    def pause(self, session, reason, **details):
+        self.paused_reason = self.last_error = reason
+        self.pending_repair = None
+        session.log("model_state", dict(state="paused", reason=reason, **details))
+        session.flag("cloud_failure", reason_code=reason)
+        session.checkpoint()
+
+    def resume(self, session):
+        if self.inflight:
+            return False
+        if self.requests >= self.config.max_requests or self.used_tokens >= self.config.max_total_tokens:
+            return False
+        self.paused_reason = None
+        self.budget_reported = False
+        self.consecutive_failures = 0
+        self.last_error = None
+        self.last_request = float("-inf")
+        session.flag("cloud_manual_resume")
+        session.log("model_state", dict(state="resumed"))
+        return True
+
     def _work(self, request_id, payload):
         start = time.monotonic()
-        response, error = None, None
+        response, error, detail = None, None, {}
         try:
             response = self.transport(payload)
         except (TimeoutError, socket.timeout):
             error = "TIMEOUT"
         except urllib.error.HTTPError as exc:
             error = "HTTP_" + str(exc.code)
+            detail = dict(http_status=exc.code, provider_error=getattr(exc, "safe_detail", {}))
         except urllib.error.URLError as exc:
             error = (
                 "TIMEOUT"
@@ -330,21 +367,36 @@ class CloudController:
             error = (
                 "SERVICE_ERROR:" + type(exc).__name__
             )  # do not log credentials in exception text
-        self.results.put((request_id, response, error, (time.monotonic() - start) * 1000))
+        self.results.put((request_id, response, error, (time.monotonic() - start) * 1000, detail))
 
     def poll(self, session, now=None, *, allow_request=True):
         now = time.monotonic() if now is None else now
         if self.closed:
             return
-        if self.episode_id is None:
+        if self.episode_id != session.episode_id:
+            if self.episode_id is not None:
+                cancel = getattr(self.transport, "cancel", None)
+                if cancel:
+                    cancel()
+                self.inflight = self.pending_repair = None
+                self.requests = self.used_tokens = self.unknown_reserved_tokens = 0
+                self.consecutive_failures = self.next_observation_tick = 0
+                self.budget_reported = False
+                self.paused_reason = self.last_error = None
+                self.last_request = float("-inf")
             self.episode_id = session.episode_id
             session.log("model_config", asdict(self.config))
+        if self.paused_reason:
+            return
         if self.config.fact_memory or self.config.strategy_memory:
             self.memory.update(session.episode_id, session.public_context())
         if self.inflight:
             request = self.inflight
             try:
-                request_id, response, error, latency = self.results.get_nowait()
+                request_id, response, error, latency, detail = self.results.get_nowait()
+                if request_id != request["id"]:
+                    session.log("model_state", dict(state="discarded_old_reply", request_id=request_id))
+                    return
             except queue.Empty:
                 if now - request["started"] >= self.config.timeout_s and not request["timed_out"]:
                     request["timed_out"] = True
@@ -370,6 +422,8 @@ class CloudController:
             total = usage.get("total_tokens") if isinstance(usage, dict) else None
             measured = type(total) is int and total >= 0
             self.used_tokens += total if measured else request["reserved_tokens"]
+            if not measured:
+                self.unknown_reserved_tokens += request["reserved_tokens"]
             action = None
             if request["timed_out"] or latency > self.config.timeout_s * 1000:
                 error = "TIMEOUT_LATE_REPLY" if response is not None else "TIMEOUT"
@@ -395,6 +449,9 @@ class CloudController:
                     budget_tokens=self.used_tokens,
                     usage_estimated=not measured,
                     latency_ms=latency,
+                    finish_reason=finish_reason(response),
+                    transport_detail=detail,
+                    diagnostics=request["diagnostics"],
                     repair_of=request.get("repair_of"),
                     error_stage=("format" if error in FORMAT_ERRORS else
                                  "observation" if error in OBSERVATION_ERRORS else
@@ -407,6 +464,7 @@ class CloudController:
                 )
                 session.log("model_submissions", {"request_id": request_id, "receipt": receipt})
                 if receipt["accepted"]:
+                    self.consecutive_failures = 0
                     if self.config.strategy_memory:
                         self.memory.strategy = strict_json(response['choices'][0]['message']['content'])['strategy']
                         self.memory.strategy_time = session.ms
@@ -415,12 +473,22 @@ class CloudController:
                     # submit queues an action; the new board is published on the next tick.
                     # Never ask the model again using the pre-execution resources/cooldowns.
                     self.next_observation_tick = session.tick + 1
-            elif (
-                self.config.repair_invalid_reply
-                and error in FORMAT_ERRORS | OBSERVATION_ERRORS
-                and not request.get("repair_of")
-            ):
-                self.pending_repair = {"request_id": request_id, "error": error}
+                else:
+                    error = self.last_error = receipt["reason"]
+            if error:
+                transient = error in ("TIMEOUT", "CONNECTION_ERROR", "TIMEOUT_LATE_REPLY", "HTTP_408", "HTTP_429") or error.startswith("HTTP_5")
+                correctable = self.config.repair_invalid_reply and error in FORMAT_ERRORS | OBSERVATION_ERRORS
+                if (transient or correctable) and not request.get("repair_of"):
+                    output = self.config.max_output_tokens
+                    if error == "RESPONSE_TRUNCATED" and self.config.provider_max_output_tokens:
+                        output = max(output, min(self.config.retry_output_tokens, self.config.provider_max_output_tokens))
+                    self.pending_repair = dict(request_id=request_id, error=error, output_tokens=output)
+                else:
+                    self.consecutive_failures += 1
+                    fatal = error.startswith("HTTP_4") and error not in ("HTTP_408", "HTTP_429")
+                    if fatal or self.consecutive_failures >= self.config.consecutive_failure_limit:
+                        self.pause(session, error, consecutive_failures=self.consecutive_failures)
+                        return
         if session.closed or session.status != "running" or session.episode_id != self.episode_id:
             return
         if not allow_request or session.tick < self.next_observation_tick:
@@ -430,22 +498,16 @@ class CloudController:
         context = session.public_context()
         if self.config.fact_memory or self.config.strategy_memory:
             context['memory'] = self.memory.snapshot(self.config.fact_memory, self.config.strategy_memory)
-        payload = make_payload(self.config, context)
         repair = getattr(self, "pending_repair", None)
-        if repair:
-            payload["messages"].append({
-                "role": "user",
-                "content": (
-                    "Your previous decision was rejected with code " + repair["error"] + ". "
-                    "It was NOT executed. This is ONE correction attempt. Use the NEW current "
-                    "observation above, not the previous board. Return exactly one valid action "
-                    "object using the complete JSON examples. For planting, check enabled card, "
-                    "sun, cooldown and empty grid cell. For removal, use an existing plant id. "
-                    "If no useful legal action is available, use WAIT. Keep the exact response fields required by the system message."
-                ),
-            })
-        # UTF-8 byte count is a deliberately conservative reservation, not reported as measured usage.
-        reserved = len(encoded(payload).encode()) + self.config.max_output_tokens + 1024
+        from .request_limits import prepare_request, InputLimitError
+        try:
+            payload, context, diagnostics = prepare_request(
+                self.config, context, make_payload,
+                output_tokens=repair.get("output_tokens") if repair else None, repair=repair)
+        except InputLimitError as exc:
+            self.pause(session, "INPUT_TOO_LARGE", diagnostics=exc.diagnostics)
+            return
+        reserved = diagnostics["estimated_input_tokens"] + diagnostics["output_limit"]
         if (
             self.requests >= self.config.max_requests
             or self.used_tokens + reserved > self.config.max_total_tokens
@@ -457,15 +519,18 @@ class CloudController:
                         "error": "BUDGET_EXHAUSTED",
                         "requests": self.requests,
                         "budget_tokens": self.used_tokens,
+                        "budget_reason": "REQUEST_LIMIT" if self.requests >= self.config.max_requests else
+                            "TOKEN_BUDGET_WITH_UNKNOWN_RESERVES" if self.unknown_reserved_tokens else "TOKEN_BUDGET",
                     },
                 )
                 self.budget_reported = True
-                self.last_error = "BUDGET_EXHAUSTED"
+                self.pause(session, "REQUEST_LIMIT" if self.requests >= self.config.max_requests else
+                           "TOKEN_BUDGET_WITH_UNKNOWN_RESERVES" if self.unknown_reserved_tokens else "TOKEN_BUDGET")
             return
         self.requests += 1
         self.pending_repair = None
         self.last_request = now
-        request_id = f"cloud-{self.requests}"
+        request_id = f"cloud-{session.episode_id[:8]}-{self.requests}"
         self.inflight = dict(
             id=request_id,
             episode_id=session.episode_id,
@@ -474,6 +539,7 @@ class CloudController:
             started=now,
             reserved_tokens=reserved,
             timed_out=False,
+            diagnostics=diagnostics,
             repair_of=repair["request_id"] if repair else None,
         )
         session.log(
@@ -483,6 +549,7 @@ class CloudController:
                 "payload": payload,
                 "observation_id": context["observation"]["observation_id"],
                 "wall_started": time.time(),
+                "diagnostics": diagnostics,
                 "repair_of": repair["request_id"] if repair else None,
             },
         )

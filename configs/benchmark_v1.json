@@ -1,0 +1,21 @@
+{
+  "version": "day_benchmark_v1",
+  "schemes": {
+    "A": {"label": "豌豆火力成长", "plants": ["SunFlower", "Peashooter", "RepeaterPea", "Threepeater", "TorchWood", "WallNut", "PotatoMine", "CherryBomb"]},
+    "B": {"label": "寒冰控制防守", "plants": ["SunFlower", "SnowPea", "Peashooter", "StarFruit", "TallNut", "Spikeweed", "Squash", "Jalapeno"]},
+    "C": {"label": "大喷菇群攻防线", "plants": ["SunFlower", "FumeShroom", "CoffeeBean", "Peashooter", "ScaredyShroom", "WallNut", "Squash", "DoomShroom"]}
+  },
+  "zombie_codes": {"N": "Zombie", "C": "ConeheadZombie", "B": "BucketheadZombie", "R": "NewspaperZombie", "S": "ScreenDoorZombie", "P": "PoleVaultingZombie", "F": "FootballZombie"},
+  "levels": {
+    "01": ["N", "N", "2N", "2N", "3N", "3N"],
+    "02": ["N", "2N", "2N", "2N+C", "2N+C", "3N+C"],
+    "03": ["N", "N+C", "2N+C", "N+2C", "2N+2C", "3N+2C"],
+    "04": ["N", "N+C", "N+2C", "N+3C", "2N+2C+B", "2N+3C+B"],
+    "05": ["N+C", "N+2C", "N+2C+B", "N+3C+B", "2N+3C+B", "2N+3C+2B"],
+    "06": ["N+C", "N+2C", "N+3C+B", "N+3C+2B", "N+3C+2B+F", "N+3C+3B+F"],
+    "07": ["N+C", "N+2C+B", "N+3C+B", "N+3C+2B+F", "N+3C+2B+F+P", "N+3C+3B+F+P"],
+    "08": ["N+2C", "N+2C+B", "N+3C+B+S", "N+3C+B+S+F", "N+3C+2B+S+F+P", "N+3C+3B+S+F+P"],
+    "09": ["N+C+R", "N+2C+B+R", "N+3C+B+S+R", "N+3C+B+S+F+P", "N+3C+3B+S+F+P", "N+3C+4B+2S+F+P"],
+    "10": ["N+2C+R", "N+3C+B+R", "N+3C+2B+S+R", "N+3C+2B+S+2F+P", "N+3C+3B+2S+2F+P", "N+3C+4B+2S+2F+2P"]
+  }
+}

@@ -31,7 +31,10 @@ class TrackedGroup(pg.sprite.Group):
         super().add_internal(sprite)
         if not hasattr(sprite, "lab_id"):
             self.lab.register(sprite, self.kind, self.row)
+        else:
+            sprite.lab_row = self.row
 
     def remove_internal(self, sprite):
         super().remove_internal(sprite)
-        self.lab.removed(sprite)
+        if not getattr(sprite, "_lab_relocating", False):
+            self.lab.removed(sprite)

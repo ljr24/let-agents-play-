@@ -15,7 +15,12 @@
   "timeout_s": 10,
   "min_interval_s": 1,
   "max_observation_age_ms": 5000,
-  "max_requests": 300,
+  "max_requests": 600,
+  "max_input_tokens": 32768,
+  "context_window_tokens": null,
+  "provider_max_output_tokens": null,
+  "retry_output_tokens": 16384,
+  "consecutive_failure_limit": 3,
   "max_total_tokens": 1000000,
   "max_output_tokens": 256,
   "token_limit_field": "max_completion_tokens"

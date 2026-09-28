@@ -5,6 +5,7 @@ from . import constants as c, map as lawn
 from .combat import CombatRules
 from .content import create_plant, create_zombie
 from .tracking import TrackedGroup, health
+from .entities.props import Hole
 
 
 class Battlefield(CombatRules):
@@ -21,6 +22,7 @@ class Battlefield(CombatRules):
             lab, "visual"
         )  # retained in checkpoints: can occlude visible enemies
         self.plant_groups = [TrackedGroup(lab, "plant", i) for i in range(5)]
+        self.terrain_groups = [TrackedGroup(lab, "terrain", i) for i in range(5)]
         self.zombie_groups = [TrackedGroup(lab, "zombie", i) for i in range(5)]
         self.bullet_groups = [TrackedGroup(lab, "bullet", i) for i in range(5)]
         self.hypno_zombie_groups = [pg.sprite.Group() for _ in range(5)]
@@ -33,7 +35,8 @@ class Battlefield(CombatRules):
 
     def commit_plant(self, obj, row, col):
         self.plant_groups[row].add(obj)
-        self.map.addMapPlant(col, row, obj.name)
+        sleeping = obj.state == c.SLEEP or self.map.map[row][col][c.MAP_SLEEP]
+        self.map.addMapPlant(col, row, obj.name, sleep=sleeping)
         self.new_plant_and_positon = (obj.name, (col, row))
 
     def spawn(self, event):
@@ -52,15 +55,23 @@ class Battlefield(CombatRules):
 
     def update_entities(self):
         self.current_time = self.game_info[c.CURRENT_TIME] = self.lab.ms
+        updated = set()
         for row in range(5):
-            for group in (self.bullet_groups[row], self.plant_groups[row], self.zombie_groups[row]):
+            for group in (self.terrain_groups[row], self.bullet_groups[row], self.plant_groups[row], self.zombie_groups[row]):
                 for obj in list(group):
+                    if obj.lab_removed or obj.lab_id in updated:
+                        continue
+                    updated.add(obj.lab_id)
                     before = health(obj)
                     with self.source(obj):
                         obj.update(self.game_info)
                     # Lost-head decay and self-consumption don't call setDamage.
                     if health(obj) != before:
                         self.lab.damage(obj, before, obj.lab_id, "decay_or_consumption")
+                    if obj.lab_kind == "terrain" and obj.health <= 0:
+                        self.map.removeMapPlant(obj.lab_col, row, c.HOLE)
+                        self.lab.emit("terrain_changed", row=row, col=obj.lab_col, terrain="grass")
+                        obj.kill()
             car = self.cars[row]
             if car:
                 car.update(self.game_info)
@@ -69,7 +80,7 @@ class Battlefield(CombatRules):
     def checkBulletCollisions(self):
         for row in range(5):
             for bullet in self.bullet_groups[row]:
-                if bullet.state != c.FLY:
+                if getattr(bullet, "state", None) != c.FLY:
                     continue
                 for enemy in self.zombie_groups[row]:
                     if enemy.state != c.DIE and pg.sprite.collide_mask(enemy, bullet):
@@ -93,10 +104,19 @@ class Battlefield(CombatRules):
     def killPlant(self, obj, shovel=False):
         if obj.lab_removed:
             return
-        reason = "shovel" if shovel else "consumed" if obj.name == "CherryBomb" else "eaten"
+        consumed = obj.name in ("CherryBomb", "Jalapeno", "DoomShroom", "Squash", "PotatoMine") and getattr(obj, "start_boom", False)
+        reason = "shovel" if shovel else "consumed" if consumed else "eaten"
         obj.lab_remove_reason = reason
-        self.map.removeMapPlant(obj.lab_col, obj.lab_row, obj.name)
         obj.health = 0
+        obj.kill()
+
+    def on_plant_removed(self, obj):
+        row, col = obj.lab_row, obj.lab_col
+        reason = getattr(obj, "lab_remove_reason", "consumed" if obj.name in ("CoffeeBean", "Squash") else "eaten")
+        obj.lab_remove_reason = reason
+        self.map.removeMapPlant(col, row, obj.name)
+        if obj.name in c.CAN_SLEEP_PLANTS:
+            self.map.map[row][col][c.MAP_SLEEP] = False
         self.lab.emit(
             "plant_loss",
             plant_id=obj.lab_id,
@@ -105,7 +125,14 @@ class Battlefield(CombatRules):
             col=obj.lab_col,
             reason=reason,
         )
-        obj.kill()
+        if obj.name == c.DOOMSHROOM and getattr(obj, "boomed", False):
+            x, y = self.map.getMapGridPos(col, row)
+            hole = Hole(x, y, self.map.map[row][col][c.MAP_PLOT_TYPE])
+            hole.lab_col = col
+            hole.timer = hole.current_time = hole.animate_timer = self.lab.ms
+            self.map.map[row][col][c.MAP_PLANT].add(c.HOLE)
+            self.terrain_groups[row].add(hole)
+            self.lab.emit("terrain_changed", row=row, col=col, terrain="crater")
 
     def checkCarCollisions(self):
         for row, car in enumerate(self.cars):

@@ -6,6 +6,8 @@ from dataclasses import replace
 from ..config import ExperimentConfig, LABELS, rules_text
 from ..controllers import CloudConfig
 from ..recording import ROOT
+from ..benchmark import load_benchmark, definitions
+from ..run_store import discover_runs
 from .play import play
 from .replay_view import replay_window
 
@@ -18,30 +20,33 @@ def launcher():
     from ..reports import compare_runs, same_state_compare
 
     root = tk.Tk()
-    root.title("pypvz · 白天实验室 V2")
-    root.geometry("780x670")
-    root.minsize(720, 620)
+    root.title("pypvz · 白天实验室 V3")
+    root.geometry("850x760")
+    root.minsize(820, 730)
     frame = ttk.Frame(root, padding=22)
     frame.pack(fill="both", expand=True)
     ttk.Label(frame, text="白天实验室", font=("Microsoft YaHei UI", 24, "bold")).pack(anchor="w")
-    ttk.Label(frame, text="默认六种植物 / 四种僵尸 · 可选实验配置 · 人机统一操作 · 记录与回放").pack(anchor="w", pady=(4, 16))
+    ttk.Label(frame, text="10档关卡 × 3套8卡方案 · 人机统一操作 · 分层记录与回放").pack(anchor="w", pady=(4, 16))
     settings = ttk.Frame(frame)
     settings.pack(fill="x")
-    scenario, seed, actor = (
-        tk.StringVar(value="经济建设"),
+    level, seed, actor = (
+        tk.StringVar(value="关卡01"),
         tk.StringVar(value="42"),
         tk.StringVar(value="真人游玩"),
     )
+    scheme_options = [key + " · " + item["label"] for key, item in definitions()["schemes"].items()]
+    scheme = tk.StringVar(value=scheme_options[0])
     practice = tk.BooleanVar(value=False)
     for index, (label, variable, options) in enumerate(
-        (("关卡", scenario, list(LABELS.values())), ("控制者", actor, ["真人游玩", "规则 AI", "云端 AI"]))
+        (("关卡", level, [f"关卡{i:02d}" for i in range(1,11)]),
+         ("方案", scheme, scheme_options), ("控制者", actor, ["真人游玩", "规则 AI", "云端 AI"]))
     ):
         ttk.Label(settings, text=label).grid(row=0, column=index * 2, padx=6)
         ttk.Combobox(
-            settings, textvariable=variable, values=options, state="readonly", width=14
+            settings, textvariable=variable, values=options, state="readonly", width=18 if index == 1 else 12
         ).grid(row=0, column=index * 2 + 1)
-    ttk.Label(settings, text="种子").grid(row=0, column=4, padx=6)
-    ttk.Entry(settings, textvariable=seed, width=9).grid(row=0, column=5)
+    ttk.Label(settings, text="种子").grid(row=1, column=0, padx=6, pady=8)
+    ttk.Entry(settings, textvariable=seed, width=12).grid(row=1, column=1)
     ttk.Checkbutton(frame, text="练习模式（允许重开，成绩不纳入正式比较）", variable=practice).pack(anchor="w", pady=12)
     experiment_path = tk.StringVar(value="")
     experiment_row = ttk.Frame(frame)
@@ -60,7 +65,7 @@ def launcher():
 
     ttk.Button(experiment_row, text="选择", command=choose_experiment).pack(side="left", padx=8)
     ttk.Button(experiment_row, text="清空", command=lambda: experiment_path.set("")).pack(side="left")
-    cloud_path = tk.StringVar(value=str(ROOT / "cloud.local.json"))
+    cloud_path = tk.StringVar(value=str(ROOT / ("cloud.local.json" if (ROOT / "cloud.local.json").exists() else "cloud.deepseek.example.json")))
     cloudrow = ttk.Frame(frame)
     cloudrow.pack(fill="x")
     ttk.Label(cloudrow, text="云端配置：").pack(side="left")
@@ -86,26 +91,32 @@ def launcher():
 
     root.protocol("WM_DELETE_WINDOW", exit_launcher)
     listing = tk.Listbox(frame, selectmode="extended", height=10, font=("Microsoft YaHei UI", 10))
+    filters = ttk.Frame(frame)
+    filters.pack(fill="x", pady=6)
+    filter_vars = [tk.StringVar(value="全部") for _ in range(3)]
+    for index, (label, choices) in enumerate((
+        ("筛选关卡", ["全部"] + [f"{i:02d}" for i in range(1,11)]),
+        ("方案", ["全部", "A", "B", "C"]),
+        ("控制者", ["全部", "human", "cloud", "rule"]))):
+        ttk.Label(filters, text=label).pack(side="left", padx=5)
+        box = ttk.Combobox(filters, textvariable=filter_vars[index], values=choices, state="readonly", width=10)
+        box.pack(side="left")
+        box.bind("<<ComboboxSelected>>", lambda event: refresh())
 
     def refresh():
-        runs[:] = sorted((ROOT / "experiments").glob("*/manifest.json"), reverse=True)
+        runs[:] = [r for r in discover_runs(ROOT / "experiments")
+                   if all(v.get() == "全部" or r[k] == v.get()
+                          for k, v in zip(("level_id", "scheme_id", "actor"), filter_vars))]
         listing.delete(0, "end")
-        for path in runs:
-            try:
-                manifest = json.loads(path.read_text(encoding="utf-8"))
-                result = json.loads((path.parent / "result.json").read_text(encoding="utf-8"))
-                listing.insert(
-                    "end",
-                    f'{path.parent.name} | {manifest["config"]["actor"]} | {LABELS[manifest["config"]["scenario"]]} | {result["status"]}',
-                )
-            except (OSError, ValueError, KeyError):
-                listing.insert("end", path.parent.name + " | 记录未完成")
+        for row in runs:
+            listing.insert("end", f'关卡{row["level_id"]} / 方案{row["scheme_id"]} / {row["actor"]} | '
+                           + row["directory"].name + " | " + row["result"].get("status", "记录未完成"))
 
     def selected():
         indices = listing.curselection()
         if not indices:
             raise ValueError("请先从列表选择记录。可按 Ctrl 多选。")
-        return [runs[i].parent for i in indices]
+        return [runs[i]["directory"] for i in indices]
 
     def guarded(fn):
         def run():
@@ -126,11 +137,7 @@ def launcher():
             "确认云端调用", f"将调用 {cloud.model}\n服务：{cloud.base_url}\n每局最多 {cloud.max_requests} 次。继续？"
         ):
             return
-        config = ExperimentConfig(
-            scenario={v: k for k, v in LABELS.items()}[scenario.get()],
-            actor=kind,
-            practice=practice.get(),
-        )
+        config = load_benchmark(level.get()[-2:], scheme.get()[0], actor=kind, practice=practice.get())
         if experiment_path.get().strip():
             with open(experiment_path.get().strip(), encoding="utf-8-sig") as stream:
                 config = replace(
@@ -218,14 +225,14 @@ def launcher():
     ttk.Button(buttons, text="刷新", command=refresh).pack(side="right")
 
     def help_rules():
-        config = ExperimentConfig()
+        config = load_benchmark(level.get()[-2:], scheme.get()[0])
         if experiment_path.get().strip():
             with open(experiment_path.get().strip(), encoding="utf-8-sig") as stream:
                 config = ExperimentConfig.from_dict(json.load(stream))
         messagebox.showinfo(
             "共享规则",
             rules_text(config)
-            + "\n\n鼠标选卡并种植，右键取消。1—6选当前页卡，左右键/滚轮翻页，S铲除，Enter等待，P暂停，Esc结束。界面行列为1起，接口为0起。",
+            + "\n\n鼠标选卡并种植，右键取消。1—8选卡，S铲除，Enter等待，P暂停，Esc结束。云端故障暂停时T重试。界面行列为1起，接口为0起。",
         )
 
     ttk.Button(frame, text="规则与操作说明", command=guarded(help_rules)).pack(anchor="w")

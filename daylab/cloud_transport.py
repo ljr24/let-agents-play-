@@ -1,6 +1,7 @@
 """Bounded, cancellable HTTP transport; credentials stay in inherited environment."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -46,6 +47,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "Redirect refused", headers, fp)
 
 
+class ProviderHTTPError(urllib.error.HTTPError):
+    def __init__(self, url, code, detail):
+        super().__init__(url, code, "Provider HTTP error", {}, None)
+        self.safe_detail = detail
+
+
 def worker():
     """Separate process so a slow DNS/connect/read cannot outlive the parent deadline."""
     try:
@@ -64,7 +71,17 @@ def worker():
                              max_bytes=4 * 1024 * 1024, max_depth=64)
         output = {"response": result}
     except urllib.error.HTTPError as exc:
-        output = {"http_error": exc.code}
+        detail = {}
+        try:
+            raw_error = exc.read(8192).decode("utf-8", errors="replace")
+            raw_error = raw_error.replace(key, "[REDACTED]")
+            raw_error = re.sub(r"(?i)(?:bearer\s+\S+|sk-[a-z0-9_-]+)", "[REDACTED]", raw_error)
+            parsed = json.loads(raw_error).get("error", {})
+            if isinstance(parsed, dict):
+                detail = {k: str(parsed[k])[:600] for k in ("code", "type", "message") if k in parsed}
+        except Exception:
+            pass
+        output = {"http_error": exc.code, "detail": detail}
     except Exception as exc:
         # Never serialize exception messages/headers/credentials.
         output = {"error": type(exc).__name__}
@@ -121,7 +138,7 @@ class BoundedTransport:
                 raise RuntimeError("Request worker stopped")
             result = strict_json(raw.decode(), max_bytes=8 * 1024 * 1024, max_depth=66)
             if "http_error" in result:
-                raise urllib.error.HTTPError(self.config.base_url, result["http_error"], "HTTP error", {}, None)
+                raise ProviderHTTPError(self.config.base_url, result["http_error"], result.get("detail", {}))
             if "error" in result:
                 if result["error"] in ("TimeoutError", "timeout"):
                     raise TimeoutError("Request timed out")

@@ -1,8 +1,12 @@
-"""Public observation v1: explicit whitelist, never raw object attributes."""
+"""Public observation v3: explicit whitelist, never raw object attributes."""
 
 
 def build_observation(session):
-    plants, zombies, bullets, mowers = [], [], [], []
+    from game import constants as c
+    plants, zombies, bullets, mowers, overlays = [], [], [], [], []
+    coffees = {p.target_id for group in session.level.plant_groups for p in group if p.name == "CoffeeBean"}
+    terrain = [["crater" if c.HOLE in cell[c.MAP_PLANT] else "grass" for cell in row]
+               for row in session.level.map.map]
     visible_ids = session.level.visible_entity_ids()
     grid = [[None] * 9 for _ in range(5)]
     for obj in session.entities.values():
@@ -27,10 +31,22 @@ def build_observation(session):
                     else "normal"
                 ),
             )
+            if obj.name == "CoffeeBean":
+                public["target_id"] = obj.target_id
+                overlays.append(public)
+                continue
+            public["sleeping"] = obj.state == c.SLEEP
+            public["waking"] = obj.lab_id in coffees
+            if obj.name == "PotatoMine":
+                public["armed"] = not obj.is_init
             plants.append(public)
             grid[obj.lab_row][obj.lab_col] = obj.lab_id
         elif obj.lab_kind == "zombie" and obj.lab_id in visible_ids:
-            public.update(armored=obj.helmet, slowed=obj.ice_slow_ratio > 1, lost_head=obj.losthead)
+            public.update(armored=bool(obj.helmet or obj.helmet_type2),
+                          shield=bool(obj.helmet_type2), slowed=obj.ice_slow_ratio > 1,
+                          lost_head=obj.losthead, jumping=getattr(obj, "jumping", False),
+                          jumped=getattr(obj, "jumped", False),
+                          paper_broken=obj.name == "NewspaperZombie" and not obj.helmet_type2)
             zombies.append(public)
         elif obj.lab_kind == "bullet" and obj.lab_id in visible_ids:
             bullets.append(public)
@@ -58,11 +74,16 @@ def build_observation(session):
         sun=session.sun,
         cards=cards,
         grid=grid,
+        terrain=terrain,
+        overlays=overlays,
         plants=plants,
         zombies=zombies,
         bullets=bullets,
         mowers=mowers,
         wave=session.wave,
+        total_waves=len(session.config.wave_counts),
+        time_limit_ms=session.config.max_time_ms,
+        remaining_time_ms=max(0, session.config.max_time_ms - session.ms),
         rows=5,
         cols=9,
     )

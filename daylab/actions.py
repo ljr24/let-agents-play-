@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 from .contracts import validate_action
+from .placement import placement_reason
 
 
 class ActionExecutor:
@@ -82,9 +83,19 @@ class ActionExecutor:
             context = session.public_context()
             session.log("decisions", {"command_id": command_id, "input": context, "action": action})
             session.queue.append(
-                dict(command_id=command_id, action=action, observation_tick=obs_tick)
+                dict(command_id=command_id, action=action, observation_tick=obs_tick,
+                     coffee_target=self._coffee_target(action, obs_tick))
             )
         return deepcopy(receipt)
+
+    def _coffee_target(self, action, tick):
+        if action.get("plant_type") != "CoffeeBean":
+            return None
+        obs = self.session.observation_cache.get(tick)
+        row, col = action["row"], action["col"]
+        if obs and 0 <= row < 5 and 0 <= col < 9:
+            return obs["grid"][row][col]
+        return None
 
     def execute(self, item):
         session = self.session
@@ -94,15 +105,13 @@ class ActionExecutor:
             reason = "STALE_OBSERVATION"
         elif action["type"] == "PLACE_PLANT":
             name, row, col = action["plant_type"], action["row"], action["col"]
-            if name not in session.config.enabled_plants:
-                reason = "DISABLED_PLANT"
-            elif not (0 <= row < 5 and 0 <= col < 9):
-                reason = "OUT_OF_BOUNDS"
-            elif not session.level.map.isAvailable(col, row, name):
-                reason = "OCCUPIED"
-            elif session.economy.check(name, session.ms):
-                reason = session.economy.check(name, session.ms)
-            else:
+            from .observation import build_observation
+            current = build_observation(session)
+            reason = placement_reason(current, name, row, col)
+            if not reason and name == "CoffeeBean" and (
+                    not item.get("coffee_target") or current["grid"][row][col] != item["coffee_target"]):
+                reason = "TARGET_CHANGED"
+            if not reason:
                 obj = session.level.create_plant(name, row, col)
                 session.level.commit_plant(obj, row, col)
                 plant_id = obj.lab_id
@@ -112,7 +121,7 @@ class ActionExecutor:
                 )
         elif action["type"] == "REMOVE_PLANT":
             target = session.entities.get(action["plant_id"])
-            if target is None or target.lab_kind != "plant" or target.lab_removed:
+            if target is None or target.lab_kind != "plant" or target.lab_removed or target.name == "CoffeeBean":
                 reason = "TARGET_MISSING"
             else:
                 plant_id = target.lab_id

@@ -28,7 +28,7 @@ def cloud_metrics(directory):
     actions = {r["command_id"]: r for r in read_lines(directory / "actions.jsonl")}
     # Old records may not have error_stage; don't pretend unknown staging passed.
     format_errors = {"INVALID_JSON", "INVALID_SCHEMA", "INVALID_ACTION", "INVALID_COORDINATE",
-                     "INVALID_TARGET", "INCOMPLETE_RESPONSE"}
+                     "INVALID_TARGET", "INCOMPLETE_RESPONSE", "RESPONSE_TRUNCATED"}
     stages = [r for r in completed if r.get("error") is None or r.get("error_stage") in ("format", "observation")
               or r.get("error") in format_errors | {"DISABLED_PLANT", "OUT_OF_BOUNDS", "OCCUPIED", "INSUFFICIENT_SUN", "COOLDOWN", "TARGET_MISSING", "CARD_NOT_READY"}]
     def tokens(usage, key):
@@ -57,4 +57,16 @@ def cloud_metrics(directory):
         "用量未知请求": unknown, "用量记录完整": bool(requests) and unknown == 0,
         "缓存命中Token": sum(cached(u) for u in usages),
         "输入Token": sum(tokens(u, "prompt_tokens") for u in usages),
+        "输出Token": sum(tokens(u, "completion_tokens") for u in usages),
+        "预算停止原因": [r.get("budget_reason", "unknown") for r in result_rows if r.get("error") == "BUDGET_EXHAUSTED"],
+        "云端暂停": [dict(sim_ms=r["sim_ms"], reason=r["reason"]) for r in read_lines(directory / "model_state.jsonl") if r.get("state") == "paused"],
+        "单次输入Token峰值": max((tokens(u, "prompt_tokens") for u in usages), default=None),
+        "分时输入Token": [
+            dict(阶段=label, 请求数=len(selected),
+                 输入Token=sum(tokens(r.get("usage", {}), "prompt_tokens") for r in selected),
+                 单次峰值=max((tokens(r.get("usage", {}), "prompt_tokens") for r in selected), default=None))
+            for label, selected in (
+                (label, [r for r in results.values() if isinstance(r.get("usage"), dict) and start <= r.get("sim_ms", 0) < end])
+                for label, start, end in (("0—60秒", 0, 60000), ("60—120秒", 60000, 120000), ("120秒起", 120000, float("inf"))))
+        ],
     }

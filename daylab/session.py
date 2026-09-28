@@ -13,6 +13,7 @@ from .scenarios import make_schedule
 from .economy import ResourceLedger
 from .schemas import APP_VERSION, MANIFEST_VERSION, STREAM_VERSIONS
 from .recording import Recorder, ROOT, clean, digest, fingerprint
+from .run_store import identity, run_directory
 
 
 class GameSession:
@@ -65,6 +66,7 @@ class GameSession:
         self.entities, self.commands, self.command_payloads = {}, {}, {}
         self.queue, self.pending_sun, self.event_log = deque(), [], []
         self.history, self.public_actions = deque(), deque()
+        self.observation_cache = {}
         self.last_submit_ms = -self.config.action_interval_ms
         self.source_id = None
         self.status = "running"
@@ -74,9 +76,7 @@ class GameSession:
         self.directory = None
         self.recorder = None
         if self.record:
-            self.directory = self.output_root / (
-                datetime.now().strftime("%Y%m%d-%H%M%S-") + self.episode_id[:8]
-            )
+            self.directory = run_directory(self.output_root, self.config, seed, self.episode_id)
             self.recorder = Recorder(
                 self.directory,
                 {
@@ -84,16 +84,18 @@ class GameSession:
                     "app_version": APP_VERSION,
                     "stream_versions": STREAM_VERSIONS,
                     "episode_id": self.episode_id,
+                    "run_identity": identity(self.config),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "config": self.config.to_dict(),
                     "seed": seed,
                     "schedule": self.schedule,
                     "environment_id": self.environment_id(),
+                    "condition_id": self.condition_id(),
                     "config_revision": digest(
                         {
                             k: v
                             for k, v in self.config.to_dict().items()
-                            if k not in ("actor", "practice")
+                            if k not in ("actor", "practice", "level_id", "scheme_id")
                         }
                     ),
                     "versions": fingerprint(),
@@ -135,8 +137,14 @@ class GameSession:
 
     def environment_id(self):
         config = self.config.to_dict()
-        for key in ("actor", "practice"):
-            config.pop(key)
+        for key in ("actor", "practice", "level_id", "scheme_id", "enabled_plants", "plant_overrides"):
+            config.pop(key, None)
+        return digest({"config": config, "schedule": self.schedule})
+
+    def condition_id(self):
+        config = self.config.to_dict()
+        for key in ("actor", "practice", "level_id", "scheme_id"):
+            config.pop(key, None)
         return digest({"config": config, "schedule": self.schedule})
 
     def log(self, name, value):
@@ -162,7 +170,7 @@ class GameSession:
                 row = source.lab_row
         obj.lab_id = f"{kind}-{self.entity_counter:05d}"
         obj.lab, obj.lab_kind, obj.lab_row = self, kind, row
-        obj.lab_owner = self.source_id if kind in ("bullet", "visual") else None
+        obj.lab_owner = getattr(obj, "lab_owner", self.source_id) if kind in ("bullet", "visual") else None
         obj.lab_removed = obj.lab_death_reported = False
         self.entities[obj.lab_id] = obj
         self.emit(
@@ -181,6 +189,7 @@ class GameSession:
         if after == before:
             return
         obj.lab_last_damage_source = source_id
+        source = self.entities.get(source_id)
         self.emit(
             "damage",
             target_id=obj.lab_id,
@@ -188,6 +197,10 @@ class GameSession:
             before=before,
             after=after,
             reason=reason,
+            owner_id=getattr(source, "lab_owner", None),
+            modifier_ids=getattr(source, "lab_modifiers", []),
+            base_damage=getattr(source, "lab_base_damage", None),
+            projectile_damage=getattr(source, "damage", None),
         )
         for key in ("helmet_health", "helmet_type2_health"):
             if before[key] > 0 and after[key] <= 0:
@@ -213,6 +226,8 @@ class GameSession:
         if obj.lab_kind == "zombie":
             self.audit_death(obj)
         obj.lab_removed = True
+        if obj.lab_kind == "plant":
+            self.level.on_plant_removed(obj)
         self.emit(
             "entity_removed",
             entity_id=obj.lab_id,
@@ -333,6 +348,9 @@ class GameSession:
         from .observation import build_observation
 
         self.observation = build_observation(self)
+        self.observation_cache[self.tick] = self.observation
+        while self.observation_cache and next(iter(self.observation_cache)) * 20 < self.ms - self.config.max_observation_age_ms:
+            del self.observation_cache[next(iter(self.observation_cache))]
         if self.tick % 5 == 0 or self.status != "running":
             self.history.append(deepcopy(self.observation))
             self.log("observations", {"observation": self.observation})

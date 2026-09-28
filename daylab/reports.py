@@ -11,6 +11,7 @@ from .controllers import rule_action, make_payload, parse_reply, ChatCompletions
 from .recording import read_lines, encoded
 from .schemas import validate_manifest
 from .cloud_metrics import cloud_metrics
+from .plant_metrics import plant_metrics
 
 
 def read_json(path):
@@ -76,7 +77,8 @@ def run_metrics(directory):
     metrics = {
         "记录": directory.name,
         "控制者": manifest["config"]["actor"],
-        "关卡": manifest["config"]["scenario"],
+        "关卡": manifest.get("run_identity", {}).get("level_id", manifest["config"]["scenario"]),
+        "方案": manifest.get("run_identity", {}).get("scheme_id", "未分类"),
         "种子": manifest["seed"],
         "结果": result["status"] if result.get("finalized") else "technical_interruption",
         "模拟秒": result["sim_ms"] / 1000,
@@ -106,6 +108,7 @@ def run_metrics(directory):
     }
     # Stable columns for mixed human/cloud CSV reports.
     metrics.update(cloud_metrics(directory))
+    metrics.update(plant_metrics(events))
     metrics.pop("实际Token", None)
     return metrics
 
@@ -116,6 +119,9 @@ def compare_runs(directories, output):
     rows = [run_metrics(p) for p in directories]
     manifests = [read_json(Path(p) / "manifest.json") for p in directories]
     matched = bool(rows) and len({m["environment_id"] for m in manifests}) == 1
+    condition_match = len({m.get("condition_id", m["environment_id"]) for m in manifests}) <= 1
+    actors_match = len({r["控制者"] for r in rows}) <= 1
+    schemes_differ = len({r["方案"] for r in rows}) > 1
     versions_match = len({encoded(m["versions"]) for m in manifests}) <= 1
     mode_match = len({m.get('execution_mode', 'realtime' if m['realtime'] else 'offline') for m in manifests}) <= 1
     cloud_rows = [r for r in rows if r["控制者"] == "cloud"]
@@ -127,16 +133,19 @@ def compare_runs(directories, output):
         and versions_match
         and mode_match
         and controller_match
+        and (condition_match or (schemes_differ and actors_match))
         and all(r["可纳入正式比较"] for r in rows)
     )
     summary = {
         "paired_comparison_valid": eligible,
         "same_environment": matched,
+        "same_condition": condition_match,
+        "comparison_kind": "cross_scheme" if schemes_differ else "same_scheme_controllers",
         "same_versions": versions_match,
         "same_execution_mode": mode_match,
         "same_cloud_controller_configuration": controller_match,
         "controller_configuration_known": controller_known,
-        "comparison_note": "Strict pairing requires identical cloud settings; differing models/policies remain descriptive comparisons, not controlled pairs.",
+        "comparison_note": "同方案允许控制者不同；跨方案要求控制者及云端设置相同。均要求环境、版本、时间模式一致且无干预。",
         "runs": rows,
     }
     (output / "comparison.json").write_text(encoded(summary), encoding="utf-8")
@@ -214,13 +223,17 @@ def same_state_compare(
             start = time.monotonic()
             error, response, payload = None, None, None
             if cloud_config:
-                payload = make_payload(cloud_config, context)
-                reservation = len(encoded(payload).encode()) + cloud_config.max_output_tokens + 1024
+                from .request_limits import prepare_request, InputLimitError
+                try:
+                    payload, _, diagnostics = prepare_request(cloud_config, context, make_payload)
+                    reservation = diagnostics["estimated_input_tokens"] + diagnostics["output_limit"]
+                except InputLimitError:
+                    payload, reservation = None, 0
                 if (
-                    calls >= cloud_config.max_requests
+                    payload is None or calls >= cloud_config.max_requests
                     or tokens + reservation > cloud_config.max_total_tokens
                 ):
-                    action, error = None, "BUDGET_EXHAUSTED"
+                    action, error = None, "INPUT_TOO_LARGE" if payload is None else "BUDGET_EXHAUSTED"
                 else:
                     delay = max(0, last_request + cloud_config.min_interval_s - time.monotonic())
                     if cancel_event:

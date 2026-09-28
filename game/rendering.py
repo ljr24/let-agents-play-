@@ -7,6 +7,7 @@ def draw(world, surface):
     background = tool.GFX[c.BACKGROUND_NAME][c.BACKGROUND_DAY]
     surface.blit(background, (0, 0), (c.BACKGROUND_OFFSET_X, 0, *c.SCREEN_SIZE))
     for row in range(5):
+        world.terrain_groups[row].draw(surface)
         for group in (world.plant_groups[row], world.zombie_groups[row], world.bullet_groups[row]):
             for obj in group:
                 surface.blit(obj.image, obj.rect)
@@ -22,7 +23,7 @@ def visible_entity_ids(world):
         visible_pixels.erase(pg.mask.from_surface(head.image), head.rect.topleft)
     draw_order = []
     for row in range(5):
-        for group in (world.plant_groups[row], world.zombie_groups[row], world.bullet_groups[row]):
+        for group in (world.terrain_groups[row], world.plant_groups[row], world.zombie_groups[row], world.bullet_groups[row]):
             draw_order.extend(group.sprites())
         if world.cars[row]:
             draw_order.append(world.cars[row])

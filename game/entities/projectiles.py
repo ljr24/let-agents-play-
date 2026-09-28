@@ -114,6 +114,7 @@ class Fume(pg.sprite.Sprite):
     def __init__(self, x, y):
         pg.sprite.Sprite.__init__(self)
         self.name = c.FUME
+        self.state = "visual"
         self.timer = 0
         self.frame_index = 0
         self.load_images()
@@ -212,7 +213,13 @@ class StarBullet(Bullet):
             map_y1 = self.level.map.getMapIndex(self.rect.x, self.rect.centery + 40)[1]
         else:
             map_y1 = self.level.map.getMapIndex(self.rect.x, self.rect.centery + 20)[1]
-        if (self.map_y != map_y1) and (0 <= map_y1 <= self.level.map_y_len - 1):  # 换行
-            self.level.bullet_groups[self.map_y].remove(self)
-            self.level.bullet_groups[map_y1].add(self)
+        if (getattr(self, "lab_row", self.map_y) != map_y1) and (0 <= map_y1 <= self.level.map_y_len - 1):  # 换行
+            self._lab_relocating = True
+            try:
+                for group in self.groups():
+                    if group in self.level.bullet_groups:
+                        group.remove(self)
+                self.level.bullet_groups[map_y1].add(self)
+            finally:
+                self._lab_relocating = False
             self.map_y = map_y1

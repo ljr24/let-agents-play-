@@ -1,4 +1,5 @@
 """Input responsibilities only."""
+from .layout import CARDS_PER_PAGE, SHOVEL_RECT, card_rect, inside
 
 
 class InputRouter:
@@ -24,7 +25,7 @@ class InputRouter:
             direction = (
                 -event.y if event.type == pg.MOUSEWHEEL else 1 if event.key == pg.K_RIGHT else -1
             )
-            pages = (len(self.session.config.enabled_plants) + 5) // 6
+            pages = (len(self.session.config.enabled_plants) + CARDS_PER_PAGE - 1) // CARDS_PER_PAGE
             self.page = (self.page + direction) % pages
             self.selected, self.shovel = None, False
             return
@@ -39,13 +40,14 @@ class InputRouter:
             if event.button != 1:
                 return
             x, y = event.pos
-            if 100 <= x < 568 and 5 <= y <= 92:
-                index = self.page * 6 + (x - 100) // 78
+            hit = next((i for i in range(CARDS_PER_PAGE) if inside((x, y), card_rect(i))), None)
+            if hit is not None:
+                index = self.page * CARDS_PER_PAGE + hit
                 if index < len(self.session.config.enabled_plants):
                     self.selected = self.session.config.enabled_plants[index]
                     self.shovel = False
                 return
-            if 588 <= x <= 670 and y <= 92:
+            if inside((x, y), SHOVEL_RECT):
                 self.shovel, self.selected = True, None
                 return
             cell = self.session.cell_at(x, y - 100)
@@ -62,8 +64,8 @@ class InputRouter:
                 self.selected = None
         elif event.type == pg.KEYDOWN:
             self.session.log("raw_input", {"kind": "key_down", "key": event.key})
-            if pg.K_1 <= event.key <= pg.K_6:
-                index = self.page * 6 + event.key - pg.K_1
+            if pg.K_1 <= event.key <= pg.K_8:
+                index = self.page * CARDS_PER_PAGE + event.key - pg.K_1
                 if index < len(self.session.config.enabled_plants):
                     self.selected = self.session.config.enabled_plants[index]
                     self.shovel = False

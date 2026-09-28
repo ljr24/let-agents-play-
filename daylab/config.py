@@ -11,8 +11,8 @@ from game.catalog import (
 
 PLANTS = DEFAULT_PLANTS
 ZOMBIES = DEFAULT_ZOMBIES
-SCENARIOS = ("economy", "armor", "rush")
-LABELS = {"economy": "经济建设", "armor": "装甲压力", "rush": "快速突袭"}
+SCENARIOS = ("economy", "armor", "rush", "benchmark")
+LABELS = {"economy": "经济建设", "armor": "装甲压力", "rush": "快速突袭", "benchmark": "十档关卡"}
 NAMES = {name: spec.label for name, spec in PLANT_CATALOG.items()}
 RULES = (
     "白天5行9列。阳光自动入账，每7秒自然产出25。向日葵种下6秒首次产25，"
@@ -43,8 +43,17 @@ class ExperimentConfig:
     wave_start_ms: int = 18000
     wave_counts: tuple = (1, 2, 3, 4, 5, 6)
     wave_types: tuple = ()
+    level_id: str = ""
+    scheme_id: str = ""
+    benchmark_version: str = ""
 
     def __post_init__(self):
+        if self.level_id and self.level_id not in tuple(f"{i:02d}" for i in range(1, 11)):
+            raise ValueError("level_id must be 01..10")
+        if self.scheme_id and self.scheme_id not in ("A", "B", "C"):
+            raise ValueError("scheme_id must be A/B/C")
+        if self.scenario == "benchmark" and not (self.level_id and self.scheme_id and self.benchmark_version and self.wave_types):
+            raise ValueError("Use load_benchmark() to create benchmark conditions")
         for key in (
             "initial_sun",
             "max_time_ms",
@@ -129,6 +138,9 @@ class ExperimentConfig:
             "wave_start_ms": 18000,
             "wave_counts": (1, 2, 3, 4, 5, 6),
             "wave_types": (),
+            "level_id": "",
+            "scheme_id": "",
+            "benchmark_version": "",
         }
         for key, value in defaults.items():
             if data[key] == value:
@@ -149,10 +161,28 @@ class ExperimentConfig:
 def rules_text(config):
     """Public static rules only; never reveal the generated future schedule."""
     value = RULES.replace("每200毫秒", f"每{config.action_interval_ms}毫秒")
+    value += (f" 本局共{len(config.wave_counts)}波，时限{config.max_time_ms / 1000:g}秒。"
+              "守住家园并消灭全部波次敌人才是胜利；最后一波开始不等于胜利。"
+              "达到时限记为超时，不是胜利。")
     if "TallNut" in config.enabled_plants:
         value += "高坚果是更耐久的阻挡植物。"
     if "FlagZombie" in config.enabled_zombies:
         value += "旗帜僵尸比普通僵尸移动稍快。"
+    details = {
+        "Threepeater": "三线射手攻击本行及上下相邻行，边缘行只攻击存在的行。",
+        "StarFruit": "杨桃向后、上下和右上右下斜向攻击，不向正右方直射。",
+        "TorchWood": "火炬树桩不主动攻击，把经过的普通豌豆变成火焰弹；寒冰弹先变回普通豌豆并失去减速。",
+        "PotatoMine": "土豆地雷种下后需要约15秒准备，准备好后接触敌人爆炸并消耗。",
+        "Spikeweed": "地刺对经过其位置的敌人持续造成伤害，不能阻挡敌人。",
+        "Squash": "窝瓜在附近有敌人时扑击，使用一次后消耗。",
+        "Jalapeno": "火爆辣椒短暂准备后对本行造成范围伤害并消耗。",
+        "FumeShroom": "大喷菇短程范围攻击本行多个敌人，攻击可穿过铁门护盾。",
+        "ScaredyShroom": "胆小菇远程攻击本行，但敌人接近时退缩停火。",
+        "DoomShroom": "毁灭菇唤醒后短暂准备，造成大范围伤害并留下不能种植的弹坑。",
+        "CoffeeBean": "白天大喷菇、胆小菇、毁灭菇默认休眠，必须在休眠蘑菇所在格种咖啡豆，唤醒动画完成才生效。咖啡豆75阳光，另占一次操作及独立卡片冷却；不能种在空地、已清醒或正在唤醒的蘑菇上。",
+    }
+    value += "".join(details.get(name, "") for name in config.enabled_plants)
+    value += "撑杆僵尸可跳过普通坚果，高坚果阻止其跳跃；铁门提供盾牌防护；读报破纸后加速。" if any(n in config.enabled_zombies for n in ("PoleVaultingZombie", "ScreenDoorZombie", "NewspaperZombie")) else ""
     parameters = {
         key: config.to_dict().get(key)
         for key in ("plant_overrides", "zombie_overrides")

@@ -1,6 +1,8 @@
 """Construction of experiment-enabled original entities and explicit day-lab timing overrides."""
 from . import constants as c
-from .entities.plants import economy, shooters, defense, explosives
+from .entities.plants import economy, shooters, defense, explosives, special
+from .entities.zombies import special as special_zombies
+from .experiment_plants import FirstShotClock, LabCoffee, LabTorch
 from .entities.zombies import walkers as zombie
 from .entities.projectiles import Bullet
 from .tracking import PlantDamage, ZombieDamage
@@ -60,6 +62,17 @@ PLANT_CLASSES = {
     "WallNut": type("LabNut", (PlantDamage, defense.WallNut), {}),
     "CherryBomb": type("LabCherry", (PlantDamage, explosives.CherryBomb), {}),
     "TallNut": type("LabTallNut", (PlantDamage, defense.TallNut), {}),
+    "Threepeater": type("LabThree", (FirstShotClock, PlantDamage, shooters.ThreePeaShooter), {}),
+    "StarFruit": type("LabStar", (FirstShotClock, PlantDamage, shooters.StarFruit), {}),
+    "ScaredyShroom": type("LabScaredy", (FirstShotClock, PlantDamage, shooters.ScaredyShroom), {}),
+    "FumeShroom": type("LabFume", (FirstShotClock, PlantDamage, shooters.FumeShroom), {}),
+    "TorchWood": LabTorch,
+    "CoffeeBean": LabCoffee,
+    "PotatoMine": type("LabPotato", (PlantDamage, explosives.PotatoMine), {}),
+    "Jalapeno": type("LabJalapeno", (PlantDamage, explosives.Jalapeno), {}),
+    "DoomShroom": type("LabDoom", (PlantDamage, explosives.DoomShroom), {}),
+    "Squash": type("LabSquash", (PlantDamage, special.Squash), {}),
+    "Spikeweed": type("LabSpike", (PlantDamage, special.Spikeweed), {}),
 }
 ZOMBIE_CLASSES = {
     name: type("Lab" + name, (ZombieDamage, cls), {})
@@ -69,6 +82,9 @@ ZOMBIE_CLASSES = {
         ("BucketheadZombie", zombie.BucketHeadZombie),
         ("FootballZombie", zombie.FootballZombie),
         ("FlagZombie", zombie.FlagZombie),
+        ("NewspaperZombie", zombie.NewspaperZombie),
+        ("ScreenDoorZombie", zombie.ScreenDoorZombie),
+        ("PoleVaultingZombie", special_zombies.PoleVaultingZombie),
     )
 }
 
@@ -87,6 +103,22 @@ def create_plant(world, name, row, col):
             - params.get("shot_interval_ms", 1400)
             + params.get("first_shot_delay_ms", 700)
         )
+    elif spec.constructor == "three":
+        obj = cls(x, y, world.bullet_groups, row, world.background_type)
+    elif spec.constructor == "star":
+        obj = cls(x, y, world.bullet_groups[row], world)
+    elif spec.constructor == "torch":
+        obj = cls(x, y, world.bullet_groups[row])
+    elif spec.constructor == "fume":
+        obj = cls(x, y, world.bullet_groups[row], world.zombie_groups[row])
+    elif spec.constructor == "coffee":
+        obj = cls(x, y, world.plant_groups[row], world.map.map[row][col], world.map, col)
+        obj.target_id = next(p.lab_id for p in world.plant_groups[row]
+                             if p.lab_col == col and p.state == c.SLEEP)
+    elif spec.constructor == "doom":
+        obj = cls(x, y, world.map.map[row][col][c.MAP_PLANT], 2)
+    elif name == "Squash":
+        obj = cls(x, y, world.map.map[row][col][c.MAP_PLANT])
     else:
         obj = cls(x, y)
     obj.lab_parameters = dict(params)
@@ -95,6 +127,10 @@ def create_plant(world, name, row, col):
     obj.current_time = obj.animate_timer = world.lab.ms
     obj.hit_timer = obj.highlight_time = -1000
     obj.lab_col = col
+    if name in ("FumeShroom", "ScaredyShroom", "DoomShroom"):
+        obj.setSleep()
+    if name == "PotatoMine":
+        obj.init_timer = world.lab.ms or -1
     return obj
 
 

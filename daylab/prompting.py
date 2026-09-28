@@ -34,7 +34,7 @@ def load_bundle(framework_file, style_file):
 def render_prompt(config, *, rules, cards, input_format):
     if config.decision_mode == 'pause_think':
         rules = rules.replace('AI思考时游戏继续。', '')
-        timing = f'本局为思考暂停模式：等待请求/纠错时模拟时间停止；本次决策结束后推进{config.advance_after_decision_ms}毫秒，再取新观察。请求失败会记录并在无动作情况下推进，不能假定动作成功。'
+        timing = f'本局为思考暂停模式：等待请求/重试时模拟时间停止；本次决策结束后推进{config.advance_after_decision_ms}毫秒，再取新观察。连续失败会触发技术暂停。以动作执行结果为准，不能假定请求或种植成功。'
     else:
         timing = '本局为实时模式：请求期间游戏继续；到达时局面可能变化，执行器再次检查时效和合法性。'
     output = ('只返回JSON对象，无Markdown、额外字段或解释。action为一个对象，只有三种形式：'

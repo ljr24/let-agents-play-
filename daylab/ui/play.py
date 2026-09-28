@@ -5,6 +5,8 @@ from ..controllers import CloudController
 from ..recording import ROOT
 from .input import InputRouter
 from .view import GameView
+from .layout import RETRY_RECT, END_RECT, inside
+from ..cloud_status import describe
 from ..runner import make_runner, make_controller, paused_cloud
 
 
@@ -31,8 +33,18 @@ def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "
             now = time.monotonic()
             dt, last = now - last, now
             for event in pg.event.get():
+                technical_pause = isinstance(controller, CloudController) and controller.paused_reason
                 if event.type == pg.QUIT or (event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE):
                     running = False
+                elif technical_pause and ((event.type == pg.KEYDOWN and event.key == pg.K_t)
+                        or (event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and inside(event.pos, RETRY_RECT))):
+                    controller.resume(session)
+                    runner.accumulated = 0.0
+                    dt = 0
+                elif technical_pause and event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and inside(event.pos, END_RECT):
+                    running = False
+                elif technical_pause:
+                    continue
                 elif (
                     event.type == pg.KEYDOWN
                     and event.key == pg.K_RETURN
@@ -61,6 +73,8 @@ def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "
                 elif router and not paused and session.status == "running":
                     router.event(event)
             if not running:
+                if isinstance(controller, CloudController) and controller.paused_reason:
+                    session.finish("technical_error")
                 break
             if not paused and session.status == "running":
                 runner.pulse(dt, now)
@@ -73,11 +87,12 @@ def play(config, seed, *, cloud_config=None, render_fps=60, output_root=ROOT / "
                         )
             extra = ""
             if isinstance(controller, CloudController):
-                state = controller.last_error or ("等待回复" if controller.inflight else "等待下一次请求")
+                state = describe(controller.last_error) or ("等待回复" if controller.inflight else "等待下一次请求")
                 extra = f"云端 | 请求 {controller.requests}/{controller.config.max_requests} | Token记账 {controller.used_tokens} | {state}"
                 if pausing:
                     extra = '思考暂停模式 | ' + ('推进中 | ' if runner.remaining else '游戏已冻结 | ') + extra
-            view.draw(tool.SCREEN, router, paused, extra)
+            view.draw(tool.SCREEN, router, paused, extra,
+                      describe(controller.paused_reason) if isinstance(controller, CloudController) and controller.paused_reason else None)
             pg.display.flip()
             if session.status != "running" and not session.closed:
                 if controller:

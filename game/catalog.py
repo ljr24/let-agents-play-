@@ -29,6 +29,17 @@ PLANTS = {
     ),
     "CherryBomb": PlantSpec("樱桃炸弹", "simple", ("cost", "cooldown_ms")),
     "TallNut": PlantSpec("高坚果", "simple"),
+    "Threepeater": PlantSpec("三线射手", "three"),
+    "StarFruit": PlantSpec("杨桃", "star"),
+    "TorchWood": PlantSpec("火炬树桩", "torch"),
+    "PotatoMine": PlantSpec("土豆地雷", "simple"),
+    "Spikeweed": PlantSpec("地刺", "simple"),
+    "Squash": PlantSpec("窝瓜", "simple"),
+    "Jalapeno": PlantSpec("火爆辣椒", "simple", ("cost", "cooldown_ms")),
+    "FumeShroom": PlantSpec("大喷菇", "fume"),
+    "CoffeeBean": PlantSpec("咖啡豆", "coffee", ("cost", "cooldown_ms")),
+    "ScaredyShroom": PlantSpec("胆小菇", "shooter"),
+    "DoomShroom": PlantSpec("毁灭菇", "doom", ("cost", "cooldown_ms")),
 }
 ZOMBIES = {
     "Zombie": ("health", "speed"),
@@ -36,6 +47,9 @@ ZOMBIES = {
     "BucketheadZombie": ("health", "helmet_health", "speed"),
     "FootballZombie": ("health", "helmet_health", "speed"),
     "FlagZombie": ("health", "speed"),
+    "PoleVaultingZombie": ("health", "speed"),
+    "ScreenDoorZombie": ("health", "helmet_type2_health", "speed"),
+    "NewspaperZombie": ("health", "helmet_type2_health", "speed"),
 }
 DEFAULT_PLANTS = tuple(PLANTS)[:6]
 DEFAULT_ZOMBIES = tuple(ZOMBIES)[:4]

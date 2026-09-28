@@ -37,6 +37,9 @@ class PauseThinkRunner:
         s, c = self.session, self.controller
         if s.closed or s.status != 'running':
             return
+        if c.paused_reason:
+            self.accumulated = 0.0
+            return
         if self.remaining:
             self.accumulated += max(0, dt)
             steps = min(10, self.remaining, int((self.accumulated + 1e-9) / .020))
@@ -56,8 +59,7 @@ class PauseThinkRunner:
         c.poll(s, now, allow_request=not had_request)
         if s.closed or s.status != 'running':
             return
-        if c.budget_reported and c.inflight is None:
-            s.finish('budget_exhausted')
+        if c.paused_reason:
             return
         if had_request and c.inflight is None and not getattr(c, 'pending_repair', None):
             self.remaining = c.config.advance_after_decision_ms // 20
@@ -78,10 +80,18 @@ class RealtimeRunner:
         session = self.session
         if session.status != "running" or session.closed:
             return
+        if isinstance(self.controller, CloudController) and self.controller.paused_reason:
+            self.accumulated = 0.0
+            self.active_wall = session.ms / 1000
+            self.lag_since = None
+            return
         self.accumulated += max(0, dt)
         self.active_wall += max(0, dt)
         if self.controller:
             self.controller.poll(session, now)
+            if isinstance(self.controller, CloudController) and self.controller.paused_reason:
+                self.accumulated = 0.0
+                return
         steps = min(10, int((self.accumulated + 1e-9) / 0.020))
         for _ in range(steps):
             session.step_realtime()

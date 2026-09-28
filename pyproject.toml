@@ -1,6 +1,6 @@
 [project]
 name = "pypvz"
-version = "2.0.0"
+version = "3.1.0"
 description = "Daytime PvZ research environment with shared human/AI actions and verified records"
 readme = "README.md"
 requires-python = ">=3.12"
